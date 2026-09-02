@@ -1,0 +1,1 @@
+async function e(e,t,n={},r){let i=await e(t,{...n,method:`POST`},r);return i.status===405?e(t,{...n,method:`GET`},r):i}var t=/\r?\n\r?\n/;function n(e){let n=e.match(t),r=n?.index;return r===void 0||!n?null:{event:e.slice(0,r),remainder:e.slice(r+n[0].length)}}export{e as n,n as t};

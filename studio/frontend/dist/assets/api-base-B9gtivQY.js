@@ -1,0 +1,1 @@
+var e=``;function t(){return typeof window>`u`?!1:`__TAURI__`in window||`__TAURI_INTERNALS__`in window||window.location.protocol===`tauri:`}var n=t();n&&(e=`http://127.0.0.1:0`);function r(t){e=`http://127.0.0.1:${t}`}function i(){return e}function a(t){return t.startsWith(`http`)?t:`${e}${t}`}export{r as i,i as n,n as r,a as t};

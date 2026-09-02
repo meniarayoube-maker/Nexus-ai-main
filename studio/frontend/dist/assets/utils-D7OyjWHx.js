@@ -1,0 +1,1 @@
+import{r as e,t}from"./bundle-mjs-NviOedTj.js";var n=e=>/^ui-\d+(p5)?$/.test(e),r=t({extend:{classGroups:{"font-size":[{text:[n]}],leading:[{leading:[n]}]}}});function i(...t){return r(e(t))}function a(e){return e>=1e9?`${(e/1e9).toFixed(1)}B`:e>=1e6?`${(e/1e6).toFixed(1)}M`:e>=1e3?`${(e/1e3).toFixed(1)}K`:String(e)}export{a as n,i as t};

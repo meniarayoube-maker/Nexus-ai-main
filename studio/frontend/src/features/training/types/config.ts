@@ -63,6 +63,10 @@ export interface TrainingConfigState {
   modelLocalPath: string | null;
   modelFormat: ModelInventoryFormat | null;
   projectName: string;
+  /** Save destination: "local" | "google_drive" | "huggingface" | "kaggle". */
+  storageTarget: "local" | "google_drive" | "huggingface" | "kaggle" | null;
+  /** Hugging Face repo id used when storageTarget === "huggingface". */
+  hfRepoId: string | null;
   trainingMethod: TrainingMethod;
   trainingMethodProvenance: TrainingMethodProvenance;
   datasetSource: DatasetSource;
@@ -190,6 +194,10 @@ export interface TrainingConfigActions {
     localPath: string | null,
   ) => void;
   setProjectName: (value: string) => void;
+  setStorageTarget: (
+    value: "local" | "google_drive" | "huggingface" | "kaggle" | null,
+  ) => void;
+  setHfRepoId: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;

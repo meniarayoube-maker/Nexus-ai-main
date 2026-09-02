@@ -2069,6 +2069,13 @@ export const en = {
       optional: "Optional",
       projectNameDescription:
         "Used in training output folder names, export defaults, and history.",
+      storageTarget: "Save Destination",
+      storageTargetDescription:
+        "Where to keep this run's outputs. Google Drive and Kaggle map to their cloud working directory and only apply on cloud hosts.",
+      storageTargetLocal: "Local",
+      storageTargetGoogleDrive: "Google Drive",
+      storageTargetHuggingFace: "Hugging Face",
+      storageTargetKaggle: "Kaggle",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",

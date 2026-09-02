@@ -52,10 +52,27 @@ from .storage_roots import (
     resolve_tensorboard_dir,
     resolve_dataset_path,
 )
+from .storage_targets import (
+    STORAGE_TARGETS,
+    STORAGE_TARGET_LOCAL,
+    STORAGE_TARGET_GOOGLE_DRIVE,
+    STORAGE_TARGET_HUGGINGFACE,
+    STORAGE_TARGET_KAGGLE,
+    storage_target_override_root,
+    is_cloud_root,
+    resolve_storage_target_write_dir,
+    storage_targets_info,
+)
 
 # Re-export shim: mark project-path helpers as used so the import-hoist
 # safety net does not flag them as unused.
-_REEXPORTED = (documents_root, project_workspaces_root, resolve_export_write_dir)
+_REEXPORTED = (
+    documents_root,
+    project_workspaces_root,
+    resolve_export_write_dir,
+    resolve_storage_target_write_dir,
+    storage_targets_info,
+)
 
 __all__ = [
     "normalize_path",
@@ -103,6 +120,15 @@ __all__ = [
     "resolve_export_write_dir",
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
+    "STORAGE_TARGETS",
+    "STORAGE_TARGET_LOCAL",
+    "STORAGE_TARGET_GOOGLE_DRIVE",
+    "STORAGE_TARGET_HUGGINGFACE",
+    "STORAGE_TARGET_KAGGLE",
+    "storage_target_override_root",
+    "is_cloud_root",
+    "resolve_storage_target_write_dir",
+    "storage_targets_info",
 ]
 
 # Bind the re-exports so the import-hoist verifier counts them as used.

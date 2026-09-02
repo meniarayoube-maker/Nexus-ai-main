@@ -960,6 +960,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setProjectName: (projectName) => setUserEdit({ projectName }),
+        setStorageTarget: (storageTarget) =>
+          setUserEdit({ storageTarget: storageTarget ?? null }),
+        setHfRepoId: (hfRepoId) => setUserEdit({ hfRepoId: hfRepoId ?? null }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
           const state = get();

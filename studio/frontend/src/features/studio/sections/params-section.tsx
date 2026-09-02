@@ -50,6 +50,8 @@ export function ParamsSection({
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       projectName: state.projectName,
+      storageTarget: state.storageTarget,
+      hfRepoId: state.hfRepoId,
       trainingMethod: state.trainingMethod,
       epochs: state.epochs,
       contextLength: state.contextLength,
@@ -58,6 +60,8 @@ export function ParamsSection({
       maxSteps: state.maxSteps,
       saveSteps: state.saveSteps,
       setProjectName: state.setProjectName,
+      setStorageTarget: state.setStorageTarget,
+      setHfRepoId: state.setHfRepoId,
       setEpochs: state.setEpochs,
       setContextLength: state.setContextLength,
       setLearningRate: state.setLearningRate,
@@ -157,6 +161,60 @@ export function ParamsSection({
               placeholder="customer-support-lora"
               maxLength={80}
             />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {t("studio.params.storageTarget")}
+              <span className="text-ui-10 font-normal text-muted-foreground/70">
+                {t("studio.params.optional")}
+              </span>
+              <FieldHint
+                text={t("studio.params.storageTargetDescription")}
+                label={t("studio.params.storageTarget")}
+              />
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  { key: null, label: t("studio.params.storageTargetLocal") },
+                  {
+                    key: "google_drive",
+                    label: t("studio.params.storageTargetGoogleDrive"),
+                  },
+                  {
+                    key: "huggingface",
+                    label: t("studio.params.storageTargetHuggingFace"),
+                  },
+                  {
+                    key: "kaggle",
+                    label: t("studio.params.storageTargetKaggle"),
+                  },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={String(option.key)}
+                  type="button"
+                  onClick={() => store.setStorageTarget(option.key)}
+                  className={[
+                    "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
+                    store.storageTarget === option.key
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-muted",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {store.storageTarget === "huggingface" && (
+              <Input
+                value={store.hfRepoId || ""}
+                onChange={(event) => store.setHfRepoId(event.target.value)}
+                placeholder="my-org/my-model"
+                maxLength={120}
+              />
+            )}
           </div>
 
           <div className="flex flex-col gap-2">

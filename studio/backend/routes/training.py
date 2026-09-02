@@ -1038,6 +1038,16 @@ def _prepare_resume_resource_provenance(
     )
 
 
+@router.get("/storage-targets")
+async def get_storage_targets(current_subject: str = Depends(get_current_subject)):
+    """Available save destinations (Local / Google Drive / Hugging Face / Kaggle) and the
+    live host environment (Colab / Kaggle detection). The UI uses this to render the
+    Storage Target selector and to show which cloud targets are reachable right now."""
+    from utils.paths import storage_targets_info
+
+    return storage_targets_info()
+
+
 @router.get("/hardware")
 async def get_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     """
@@ -1045,9 +1055,7 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 
     Polled by the frontend during training.
     """
-    from utils.hardware import get_gpu_utilization
-
-    # Off-loop: the first call blocks on detection while the warm is importing torch.
+    from utils.hardware import get_gpu_utilization    # Off-loop: the first call blocks on detection while the warm is importing torch.
     return await asyncio.to_thread(get_gpu_utilization)
 
 
@@ -1487,6 +1495,8 @@ async def start_training(
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
             "output_dir": resume_output_dir or ((request.output_dir or "").strip() or None),
+            "storage_target": ((request.storage_target or "").strip() or "") or None,
+            "hf_repo_id": ((request.hf_repo_id or "").strip() or None),
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "require_exact_resume_resources": resume_requires_exact_resources,
             "require_exact_model_resource": resume_requires_exact_model,
@@ -2670,6 +2680,26 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     return resolve_dataset_path(raw)
 
 
+def _resolve_diffusion_storage_dir(config: dict, storage_target: str) -> Path:
+    """Resolve a diffusion training ``output_dir`` for a non-local storage target.
+
+    Delegates to :func:`utils.paths.resolve_storage_target_write_dir`, which honors a
+    cloud write root (Google Drive on Colab, /kaggle/working) and keeps every other
+    absolute path strictly contained under the outputs root. The returned path is
+    normalized and created, then handed to the training subprocess as ``output_dir``.
+    """
+    from utils.paths import resolve_storage_target_write_dir
+
+    run_name = str(config.get("base_model") or config.get("output_dir") or "run")
+    _target, resolved = resolve_storage_target_write_dir(
+        storage_target,
+        config.get("output_dir"),
+        run_name,
+        hf_repo_id=config.get("hf_repo_id"),
+    )
+    return Path(resolved)
+
+
 def _preflight_diffusion_resume(
     config: dict,
     identity: Any,
@@ -2745,29 +2775,43 @@ async def start_diffusion_training(
     # them relative to its own cwd.
     config = body.model_dump()
     try:
-        from utils.paths import outputs_root, resolve_output_dir
+        from utils.paths import (
+            outputs_root,
+            resolve_output_dir,
+            resolve_storage_target_write_dir,
+        )
 
         config["data_dir"] = str(_resolve_diffusion_data_dir(config["data_dir"]))
-        # A name that cleans away to nothing ("." / "outputs" / "./.") resolves to the outputs ROOT, where the trainer
-        # would write the adapter flat and the is_dir()-filtered listings could never see it.
-        root = outputs_root().resolve()
-        out_dir = resolve_output_dir(config["output_dir"])
-        if Path(out_dir).resolve() == root:
-            raise HTTPException(
-                status_code = 400,
-                detail = (
-                    f"'{config['output_dir']}' is the outputs folder itself, not a run inside it. "
-                    "Pick a name for this run."
-                ),
-            )
+        # Multi-storage-target: for a non-local target we resolve through the storage-target
+        # resolver, which honors a cloud write root (Google Drive on Colab, /kaggle/working)
+        # while keeping every other absolute path strictly contained. For the default local
+        # target we keep the existing strict containment + root-collapse guard below.
+        storage_target = str(config.get("storage_target") or "").strip().lower() or "local"
+        if storage_target == "local":
+            # A name that cleans away to nothing ("." / "outputs" / "./.") resolves to the
+            # outputs ROOT, where the trainer would write the adapter flat and the is_dir()-
+            # filtered listings could never see it.
+            root = outputs_root().resolve()
+            out_dir = resolve_output_dir(config["output_dir"])
+            if Path(out_dir).resolve() == root:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"'{config['output_dir']}' is the outputs folder itself, not a run inside it. "
+                        "Pick a name for this run."
+                    ),
+                )
+        else:
+            out_dir = _resolve_diffusion_storage_dir(config, storage_target)
         config["output_dir"] = str(out_dir)
         # The persistent conditioning cache is another trainer-written directory, so it gets the same containment.
-        # Blank/None means the in-memory cache, so it must not resolve to the outputs root.
+        # Blank/None means the in-memory cache, so it must not resolve to the outputs root. The cache is only
+        # meaningful on a real filesystem (never a Hugging Face upload target), so it stays strictly contained.
         cond_cache = str(config.get("cond_cache_dir") or "").strip()
         cond_cache_dir = resolve_output_dir(cond_cache) if cond_cache else None
         # Same collapse, but the cache has an honest "off" to fall back to: one flat safetensors per cached latent in
         # the trained-models directory is never what was meant.
-        if cond_cache_dir is not None and Path(cond_cache_dir).resolve() == root:
+        if cond_cache_dir is not None and Path(cond_cache_dir).resolve() == outputs_root().resolve():
             cond_cache_dir = None
         config["cond_cache_dir"] = str(cond_cache_dir) if cond_cache_dir is not None else None
     except ValueError as e:

@@ -60,6 +60,8 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelLocalPath: null,
   modelFormat: null,
   projectName: "",
+  storageTarget: null,
+  hfRepoId: null,
   trainingMethod: "qlora",
   trainingMethodProvenance: {
     learningRateManuallySet: false,

@@ -981,6 +981,11 @@ class DiffusionLoraConfig:
     caption_column: str = "text"  # column in metadata.jsonl
     adapter_name: str = "default"
     hf_token: Optional[str] = None
+    # Multi-storage-target (see utils.paths.storage_targets). "local" (default) keeps
+    # outputs under the Studio outputs root; "google_drive" / "kaggle" use their cloud
+    # mounts; "huggingface" stages locally then pushes the adapter to hf_repo_id.
+    storage_target: str = "local"
+    hf_repo_id: Optional[str] = None
     # Derived by normalized(): the byte-identical mirror used by from_pretrained while
     # base_model remains the canonical id stored in metadata and resume identity.
     fetch_base_model: Optional[str] = None

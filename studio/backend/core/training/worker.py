@@ -2680,12 +2680,52 @@ def _start_mlx_stop_poller(stop_queue):
 
 
 def _resolve_mlx_output_dir(config, model_name):
-    from utils.paths import resolve_training_write_dir, default_run_dir_name
+    from utils.paths import (
+        resolve_training_write_dir,
+        default_run_dir_name,
+        resolve_storage_target_write_dir,
+    )
 
     output_dir = config.get("output_dir", "")
+    storage_target = str(config.get("storage_target") or "").strip().lower() or "local"
+    if storage_target != "local":
+        # Multi-storage-target: resolve through the cloud-aware resolver, which honors
+        # Google Drive / Kaggle mounts and keeps everything else contained.
+        _target, resolved = resolve_storage_target_write_dir(
+            storage_target,
+            output_dir or None,
+            f"{default_run_dir_name(model_name)}_{int(time.time())}",
+            hf_repo_id=config.get("hf_repo_id"),
+        )
+        return str(resolved)
     if not output_dir:
         output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
-        return str(resolve_training_write_dir(output_dir))
+    return str(resolve_training_write_dir(output_dir))
+
+
+def _maybe_push_hf_output(output_dir: "str | None", config: dict) -> None:
+    """Best-effort Hugging Face upload for the ``huggingface`` storage target.
+
+    Runs on a completed/stopped run that actually saved an output directory. Failures
+    are logged but never fatal -- the artifacts already live on disk, and a failed
+    upload must not change the run's terminal status.
+    """
+    if not output_dir or str(config.get("storage_target") or "").strip().lower() != "huggingface":
+        return
+    repo_id = str(config.get("hf_repo_id") or "").strip()
+    if not repo_id:
+        return
+    try:
+        from utils.paths.storage_push import push_output_to_huggingface
+
+        push_output_to_huggingface(
+            output_dir,
+            repo_id,
+            hf_token=config.get("hf_token") or None,
+            private=bool(config.get("hf_private")),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Best-effort HF upload failed for %s -> %s", output_dir, repo_id)
     if config.get("allow_external_output_dir"):
         output_path = Path(output_dir).expanduser()
         if not output_path.is_absolute():
@@ -3536,6 +3576,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 if not _stop_checkpoint_ok():
                     return
                 _send("complete", output_dir = output_dir, status_message = "Training stopped")
+                _maybe_push_hf_output(output_dir, config)
         else:
             _send("status", status_message = "Saving model...")
             mx.synchronize()
@@ -3544,6 +3585,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
                 return
             _send("complete", output_dir = output_dir, status_message = "Training completed")
+            _maybe_push_hf_output(output_dir, config)
     finally:
         _finish_tracking()
 

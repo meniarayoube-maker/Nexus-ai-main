@@ -2366,6 +2366,24 @@ def _train_dit(
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
         catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
+        # Multi-storage-target: push the finished adapter to Hugging Face when chosen.
+        if (getattr(cfg, "storage_target", "local") or "local") == "huggingface" and getattr(
+            cfg, "hf_repo_id", None
+        ):
+            try:
+                from utils.paths.storage_push import push_output_to_huggingface
+
+                push_output_to_huggingface(
+                    out_dir,
+                    cfg.hf_repo_id,
+                    hf_token=getattr(cfg, "hf_token", None) or None,
+                )
+            except Exception as exc:  # noqa: BLE001 -- adapter already saved locally
+                _emit(
+                    on_event,
+                    "warning",
+                    message = f"Hugging Face upload failed (adapter kept locally): {exc}",
+                )
         if ema is not None and ema.updates > 0:
             try:
                 # Report the adapter FILE, like lora_path, so a caller can load it directly.

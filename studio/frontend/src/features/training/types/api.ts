@@ -10,6 +10,10 @@ export interface TrainingStartRequest {
   project_name: string | null;
     /** Optional free-form checkpoint/output directory (absolute paths allowed). */
   output_dir?: string | null;
+  /** Where to save the run's outputs: "local" | "google_drive" | "huggingface" | "kaggle". */
+  storage_target?: string | null;
+  /** Hugging Face repo id when storage_target === "huggingface". */
+  hf_repo_id?: string | null;
   training_type: string;
   hf_token: string | null;
   model_known_cached?: boolean;

@@ -25,6 +25,10 @@ _INT_RE = re.compile(r"[+-]?[0-9]+")
 _HF_DATASET_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?")
 TRAINING_REQUEST_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
 
+# User-selectable save destinations (see utils.paths.storage_targets). Mirrors the
+# STORAGE_TARGETS tuple there; kept as a Literal so FastAPI rejects unknown targets.
+StorageTarget = Literal["local", "google_drive", "huggingface", "kaggle"]
+
 
 _MAX_BATCH_SIZE = 4096
 _MAX_GRAD_ACCUM = 4096
@@ -116,6 +120,24 @@ class TrainingStartRequest(BaseModel):
             "Optional free-form directory for checkpoints and run outputs. "
             "Absolute paths are allowed (e.g. /content/drive/MyDrive/runs). "
             "Relative paths resolve under the Studio outputs root."
+        ),
+    )
+    storage_target: Optional[StorageTarget] = Field(
+        None,
+        description = (
+            "Where to save the run's outputs. 'local' (default) writes under the "
+            "Studio outputs root; 'google_drive' writes to the Colab Drive mount; "
+            "'kaggle' writes to /kaggle/working; 'huggingface' stages locally and "
+            "uploads the adapter to a Hugging Face repo (see hf_repo_id)."
+        ),
+    )
+    hf_repo_id: Optional[str] = Field(
+        None,
+        max_length = 255,
+        description = (
+            "Hugging Face repo id (e.g. 'user/my-adapter') used when storage_target "
+            "is 'huggingface'. Created if it does not exist, then a git clone or Hub "
+            "upload pushes the training output there."
         ),
     )
     start_request_id: Optional[str] = Field(
@@ -816,6 +838,23 @@ class DiffusionTrainingStartRequest(BaseModel):
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    storage_target: Optional[StorageTarget] = Field(
+        None,
+        description = (
+            "Where to save the run's outputs. 'local' (default) writes under the "
+            "Studio outputs root; 'google_drive' writes to the Colab Drive mount; "
+            "'kaggle' writes to /kaggle/working; 'huggingface' stages locally and "
+            "uploads the adapter to a Hugging Face repo (see hf_repo_id)."
+        ),
+    )
+    hf_repo_id: Optional[str] = Field(
+        None,
+        max_length = 255,
+        description = (
+            "Hugging Face repo id (e.g. 'user/my-adapter') used when storage_target "
+            "is 'huggingface'. Created if it does not exist and the adapter uploaded there."
+        ),
+    )
     model_family: Optional[str] = Field(
         None,
         description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",

@@ -94,6 +94,8 @@ export function buildTrainingStartPayload(
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
     output_dir: getCustomOutputPath(),
+    storage_target: config.storageTarget ?? undefined,
+    hf_repo_id: config.hfRepoId?.trim() ? config.hfRepoId.trim() : null,
     training_type: toBackendTrainingType(config.trainingMethod),
     hf_token: hfToken,
     model_known_cached: config.modelKnownCached,

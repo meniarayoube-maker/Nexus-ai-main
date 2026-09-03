@@ -180,9 +180,7 @@ def resolve_storage_target_write_dir(
             STORAGE_TARGET_GOOGLE_DRIVE, output_dir, run_name, _default_google_drive_dir
         )
     if target == STORAGE_TARGET_KAGGLE:
-        return _resolve_cloud_or_local(
-            STORAGE_TARGET_KAGGLE, output_dir, run_name, _default_kaggle_dir
-        )
+        return _resolve_kaggle(output_dir, run_name)
     if target == STORAGE_TARGET_HUGGINGFACE:
         # Stage under outputs_root; the push handler uploads from here.
         return STORAGE_TARGET_HUGGINGFACE, _resolve_contained(output_dir, run_name)
@@ -215,6 +213,30 @@ def _resolve_cloud_or_local(target, output_dir, run_name, default_fn):
         return target, candidate
     # Cloud root is not mounted here: fall back to a contained local dir.
     return STORAGE_TARGET_LOCAL, _resolve_contained(output_dir, run_name)
+
+
+def _resolve_kaggle(output_dir: Optional[str], run_name: str) -> "tuple[str, Path]":
+    """Always direct Kaggle writes under ``/kaggle/working/unsloth-outputs``.
+
+    Kaggle only persists ``/kaggle/working`` (everything else on a notebook is
+    wiped between sessions), so the finished run must land inside that durable
+    root to survive. We always place it under the ``unsloth-outputs`` subfolder --
+    even when the caller supplied an explicit absolute Kaggle path -- so every
+    artifact lives in one predictable place for the "download all" and dataset-
+    upload flow. The chosen leaf name is the last segment of an explicit path, or
+    ``run_name`` when none was given.
+    """
+    root = storage_target_override_root(STORAGE_TARGET_KAGGLE)
+    if root is None:
+        # /kaggle/working is not mounted here (e.g. running on Colab/desktop): a
+        # Kaggle save degrades to a contained local dir so training never loses
+        # its output.
+        return STORAGE_TARGET_LOCAL, _resolve_contained(output_dir, run_name)
+    base = root / "unsloth-outputs"
+    ensure_dir(base)
+    candidate = base / _sanitize_rel(output_dir, run_name)
+    ensure_dir(candidate)
+    return STORAGE_TARGET_KAGGLE, candidate
 
 
 def _resolve_contained(output_dir: Optional[str], run_name: str) -> Path:

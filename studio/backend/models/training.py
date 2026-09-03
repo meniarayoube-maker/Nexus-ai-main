@@ -152,6 +152,14 @@ class TrainingStartRequest(BaseModel):
         description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token")
+    kaggle_private: Optional[bool] = Field(
+        None,
+        description = (
+            "Privacy setting for Kaggle dataset uploads: True (default) keeps the "
+            "dataset private; False makes it public.  Only used when storage_target "
+            "is 'kaggle'."
+        ),
+    )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     max_seq_length: int = Field(2048, description = "Maximum sequence length")
     vision_image_size: Optional[int] = Field(
@@ -921,6 +929,13 @@ class DiffusionTrainingStartRequest(BaseModel):
     random_flip: bool = Field(True)
     caption_column: str = Field("text")
     hf_token: Optional[str] = Field(None)
+    kaggle_private: Optional[bool] = Field(
+        None,
+        description = (
+            "Privacy for Kaggle dataset uploads: True (default) = private; "
+            "False = public. Only used when storage_target is 'kaggle'."
+        ),
+    )
     cache_latents: bool = Field(
         True, description = "Precompute VAE latents once and free the VAE for the run"
     )

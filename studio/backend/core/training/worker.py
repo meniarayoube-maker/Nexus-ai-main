@@ -2739,6 +2739,34 @@ def _maybe_push_hf_output(output_dir: "str | None", config: dict) -> dict:
     return {"ok": ok, "repo_url": repo_url, "error": error}
 
 
+def _maybe_push_kaggle_output(output_dir: "str | None", config: dict) -> dict:
+    """Upload a finished run to Kaggle as a Dataset for the ``kaggle`` storage target.
+
+    Runs on a completed/stopped run that wrote to ``/kaggle/working/unsloth-outputs``.
+    Returns a structured outcome as ``{"ok": bool, "dataset_url": str|None, "error": str|None}``
+    so callers can surface a precise result/error to the UI. The upload is never fatal
+    -- the artifacts already live on disk, and a failed upload must not change the run's
+    terminal status -- but it is **not** swallowed silently anymore.
+    """
+    none_result = {"ok": False, "dataset_url": None, "error": None}
+    if not output_dir or str(config.get("storage_target") or "").strip().lower() != "kaggle":
+        return none_result
+    try:
+        from utils.paths.kaggle_push import push_output_to_kaggle
+
+        ok, dataset_url, error = push_output_to_kaggle(
+            output_dir,
+            is_private=bool(config.get("kaggle_private", True)),
+        )
+    except Exception as exc:  # noqa: BLE001 - structural failure; surface it, don't crush the run.
+        message = f"Kaggle upload failed unexpectedly: {exc}"
+        logger.warning("Kaggle upload errored for %s: %s", output_dir, exc)
+        return {"ok": False, "dataset_url": None, "error": message}
+    if not ok:
+        logger.warning("Kaggle upload reported failure for %s: %s", output_dir, error)
+    return {"ok": ok, "dataset_url": dataset_url, "error": error}
+
+
 def _resolve_mlx_max_grad_norm(value):
     """Global-norm clip threshold for MLX runs; None keeps the trainer's default.
 
@@ -3552,26 +3580,39 @@ def _run_mlx_training(event_queue, stop_queue, config):
             except Exception:
                 pass
 
-    def _report_hf_push(res: dict) -> None:
-        """Surface a Hugging Face upload outcome to the UI via the event channel.
+    def _report_storage_push(output_dir_local: "str | None", cfg: dict) -> None:
+        """Dispatch + surface the result of whichever storage target is active.
 
-        Training's numeric SSE progress stream only carries ``progress/complete``
-        payloads, so upload status is surfaced through the run status channel the
-        UI already renders: a ``status`` message on success and a ``warning`` with
-        the precise reason on failure. A structured ``upload_status`` event is also
-        emitted for any consumer that wants the machine-readable result.
+        Runs on a completed/stopped run that actually saved an output directory.
+        For each supported upload target (``huggingface``, ``kaggle``) the
+        appropriate ``_maybe_push_*_output`` is called, and the structured result
+        is surfaced through the run status channel the UI already renders: a
+        ``status`` message on success, a ``warning`` with a precise reason on
+        failure.  A structured ``upload_status`` event is also emitted for any
+        consumer that wants the machine-readable result.
         """
+        target = str(cfg.get("storage_target") or "").strip().lower()
+        if target == "huggingface":
+            res = _maybe_push_hf_output(output_dir_local, cfg)
+            label = "Hugging Face"
+            url_key = "repo_url"
+        elif target == "kaggle":
+            res = _maybe_push_kaggle_output(output_dir_local, cfg)
+            label = "Kaggle Dataset"
+            url_key = "dataset_url"
+        else:
+            # local / google_drive: path-only, no upload step.
+            return
         if not res:
             return
-        repo_url = res.get("repo_url")
+        url = res.get(url_key)
         error = res.get("error")
-        if res.get("ok") and repo_url:
-            _send("upload_status", ok = True, repo_url = repo_url, error = None)
-            _send("status", status_message = f"Hugging Face upload complete: {repo_url}")
+        if res.get("ok") and url:
+            _send("upload_status", ok = True, repo_url = url, error = None)
+            _send("status", status_message = f"{label} upload complete: {url}")
         elif error:
             _send("upload_status", ok = False, repo_url = None, error = error)
-            _send("warning", message = f"Hugging Face upload failed: {error}")
-        # Skipped (target not active): no message.
+            _send("warning", message = f"{label} upload failed: {error}")
 
     def _stop_checkpoint_ok() -> bool:
         if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
@@ -3602,7 +3643,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 if not _stop_checkpoint_ok():
                     return
                 _send("complete", output_dir = output_dir, status_message = "Training stopped")
-                _report_hf_push(_maybe_push_hf_output(output_dir, config))
+                _report_storage_push(output_dir, config)
         else:
             _send("status", status_message = "Saving model...")
             mx.synchronize()
@@ -3611,7 +3652,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
                 return
             _send("complete", output_dir = output_dir, status_message = "Training completed")
-            _report_hf_push(_maybe_push_hf_output(output_dir, config))
+            _report_storage_push(output_dir, config)
     finally:
         _finish_tracking()
 

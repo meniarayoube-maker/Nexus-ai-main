@@ -2366,10 +2366,9 @@ def _train_dit(
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
         catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
-        # Multi-storage-target: push the finished adapter to Hugging Face when chosen.
-        if (getattr(cfg, "storage_target", "local") or "local") == "huggingface" and getattr(
-            cfg, "hf_repo_id", None
-        ):
+        # Multi-storage-target: push the finished adapter when the target is a cloud upload.
+        _storage = (getattr(cfg, "storage_target", "local") or "local").strip().lower()
+        if _storage == "huggingface" and getattr(cfg, "hf_repo_id", None):
             try:
                 from utils.paths.storage_push import push_output_to_huggingface
 
@@ -2393,6 +2392,30 @@ def _train_dit(
                     on_event,
                     "warning",
                     message = f"Hugging Face upload failed (adapter kept locally) - {error}",
+                )
+        elif _storage == "kaggle":
+            try:
+                from utils.paths.kaggle_push import push_output_to_kaggle
+
+                ok, _kaggle_url, error = push_output_to_kaggle(
+                    out_dir,
+                    is_private=bool(getattr(cfg, "kaggle_private", True)),
+                )
+            except Exception as exc:  # noqa: BLE001 -- adapter already saved locally
+                _kaggle_url = None
+                ok, error = False, f"Kaggle upload failed (adapter kept locally): {exc}"
+            _emit(on_event, "upload_status", ok = ok, repo_url = _kaggle_url, error = error)
+            if ok:
+                _emit(
+                    on_event,
+                    "status",
+                    status_message = f"Kaggle Dataset upload complete: {_kaggle_url}",
+                )
+            else:
+                _emit(
+                    on_event,
+                    "warning",
+                    message = f"Kaggle upload failed (adapter kept locally) - {error}",
                 )
         if ema is not None and ema.updates > 0:
             try:

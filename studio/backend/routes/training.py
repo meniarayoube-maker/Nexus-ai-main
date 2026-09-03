@@ -1497,6 +1497,7 @@ async def start_training(
             "output_dir": resume_output_dir or ((request.output_dir or "").strip() or None),
             "storage_target": ((request.storage_target or "").strip() or "") or None,
             "hf_repo_id": ((request.hf_repo_id or "").strip() or None),
+            "kaggle_private": request.kaggle_private,
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "require_exact_resume_resources": resume_requires_exact_resources,
             "require_exact_model_resource": resume_requires_exact_model,

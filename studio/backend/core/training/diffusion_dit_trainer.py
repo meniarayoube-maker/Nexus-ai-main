@@ -2373,16 +2373,26 @@ def _train_dit(
             try:
                 from utils.paths.storage_push import push_output_to_huggingface
 
-                push_output_to_huggingface(
+                ok, _repo_url, error = push_output_to_huggingface(
                     out_dir,
                     cfg.hf_repo_id,
                     hf_token=getattr(cfg, "hf_token", None) or None,
                 )
             except Exception as exc:  # noqa: BLE001 -- adapter already saved locally
+                _repo_url = None
+                ok, error = False, f"Hugging Face upload failed (adapter kept locally): {exc}"
+            _emit(on_event, "upload_status", ok = ok, repo_url = _repo_url, error = error)
+            if ok:
+                _emit(
+                    on_event,
+                    "status",
+                    status_message = f"Hugging Face upload complete: {_repo_url}",
+                )
+            else:
                 _emit(
                     on_event,
                     "warning",
-                    message = f"Hugging Face upload failed (adapter kept locally): {exc}",
+                    message = f"Hugging Face upload failed (adapter kept locally) - {error}",
                 )
         if ema is not None and ema.updates > 0:
             try:

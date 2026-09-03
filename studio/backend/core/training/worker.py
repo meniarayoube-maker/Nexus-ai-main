@@ -2703,35 +2703,40 @@ def _resolve_mlx_output_dir(config, model_name):
     return str(resolve_training_write_dir(output_dir))
 
 
-def _maybe_push_hf_output(output_dir: "str | None", config: dict) -> None:
-    """Best-effort Hugging Face upload for the ``huggingface`` storage target.
+def _maybe_push_hf_output(output_dir: "str | None", config: dict) -> dict:
+    """Upload a finished run to Hugging Face for the ``huggingface`` storage target.
 
-    Runs on a completed/stopped run that actually saved an output directory. Failures
-    are logged but never fatal -- the artifacts already live on disk, and a failed
-    upload must not change the run's terminal status.
+    Runs on a completed/stopped run that actually saved an output directory.
+
+    Returns a structured outcome as ``{"ok": bool, "repo_url": str|None, "error": str|None}``
+    so callers can surface a precise result/error to the UI. The upload is never fatal
+    -- the artifacts already live on disk, and a failed upload must not change the run's
+    terminal status -- but it is **not** swallowed silently anymore: callers use the
+    returned outcome to emit a visible status/warning event.
     """
+    # Default: target not active (nothing to do, no user-visible message).
+    none_result = {"ok": False, "repo_url": None, "error": None}
     if not output_dir or str(config.get("storage_target") or "").strip().lower() != "huggingface":
-        return
+        return none_result
     repo_id = str(config.get("hf_repo_id") or "").strip()
     if not repo_id:
-        return
+        return none_result
     try:
         from utils.paths.storage_push import push_output_to_huggingface
 
-        push_output_to_huggingface(
+        ok, repo_url, error = push_output_to_huggingface(
             output_dir,
             repo_id,
             hf_token=config.get("hf_token") or None,
             private=bool(config.get("hf_private")),
         )
-    except Exception:  # noqa: BLE001
-        logger.warning("Best-effort HF upload failed for %s -> %s", output_dir, repo_id)
-    if config.get("allow_external_output_dir"):
-        output_path = Path(output_dir).expanduser()
-        if not output_path.is_absolute():
-            output_path = Path.cwd() / output_path
-        return str(output_path.resolve())
-    return str(resolve_training_write_dir(output_dir))
+    except Exception as exc:  # noqa: BLE001 - structural failure; surface it, don't crush the run.
+        message = f"Hugging Face upload failed unexpectedly: {exc}"
+        logger.warning("HF upload errored for %s -> %s: %s", output_dir, repo_id, exc)
+        return {"ok": False, "repo_url": None, "error": message}
+    if not ok:
+        logger.warning("HF upload reported failure for %s -> %s: %s", output_dir, repo_id, error)
+    return {"ok": ok, "repo_url": repo_url, "error": error}
 
 
 def _resolve_mlx_max_grad_norm(value):
@@ -3547,6 +3552,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
             except Exception:
                 pass
 
+    def _report_hf_push(res: dict) -> None:
+        """Surface a Hugging Face upload outcome to the UI via the event channel.
+
+        Training's numeric SSE progress stream only carries ``progress/complete``
+        payloads, so upload status is surfaced through the run status channel the
+        UI already renders: a ``status`` message on success and a ``warning`` with
+        the precise reason on failure. A structured ``upload_status`` event is also
+        emitted for any consumer that wants the machine-readable result.
+        """
+        if not res:
+            return
+        repo_url = res.get("repo_url")
+        error = res.get("error")
+        if res.get("ok") and repo_url:
+            _send("upload_status", ok = True, repo_url = repo_url, error = None)
+            _send("status", status_message = f"Hugging Face upload complete: {repo_url}")
+        elif error:
+            _send("upload_status", ok = False, repo_url = None, error = error)
+            _send("warning", message = f"Hugging Face upload failed: {error}")
+        # Skipped (target not active): no message.
+
     def _stop_checkpoint_ok() -> bool:
         if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
             return True
@@ -3576,7 +3602,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 if not _stop_checkpoint_ok():
                     return
                 _send("complete", output_dir = output_dir, status_message = "Training stopped")
-                _maybe_push_hf_output(output_dir, config)
+                _report_hf_push(_maybe_push_hf_output(output_dir, config))
         else:
             _send("status", status_message = "Saving model...")
             mx.synchronize()
@@ -3585,7 +3611,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
                 return
             _send("complete", output_dir = output_dir, status_message = "Training completed")
-            _maybe_push_hf_output(output_dir, config)
+            _report_hf_push(_maybe_push_hf_output(output_dir, config))
     finally:
         _finish_tracking()
 

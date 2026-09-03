@@ -4861,9 +4861,43 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 config.get("project_name"),
             )
-        output_dir = str(resolve_output_dir(output_dir))
+        # Multi-storage-target (CUDA/SFT path): the Save Destination selector was
+        # silently ignored here -- every run resolved through resolve_output_dir
+        # (local-only). Route non-local targets through the cloud-aware resolver
+        # so Google Drive / Kaggle / Hugging Face behave like the MLX path.
+        _cuda_storage_target = str(config.get("storage_target") or "").strip().lower() or "local"
+        if _cuda_storage_target != "local":
+            from utils.paths import resolve_storage_target_write_dir
+
+            _explicit = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+                resume_from_checkpoint
+            )
+            _default_name = _explicit or build_default_output_dir_name(
+                model_name,
+                config.get("project_name"),
+            )
+            _t, _resolved = resolve_storage_target_write_dir(
+                _cuda_storage_target,
+                _explicit or None,
+                str(_default_name),
+                hf_repo_id=config.get("hf_repo_id"),
+            )
+            output_dir = str(_resolved)
+        else:
+            output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
+        logger.info("CUDA training storage_target=%s output_dir=%s", _cuda_storage_target, output_dir)
+        _send_status(event_queue, f"Saving outputs to: {output_dir}")
+        if _cuda_storage_target in ("google_drive", "kaggle"):
+            try:
+                from utils.paths import _cloud_target_hint
+
+                _hint_ok, _hint_reason = _cloud_target_hint(_cuda_storage_target)
+                if not _hint_ok:
+                    event_queue.put({"type": "warning", "message": _hint_reason, "ts": time.time()})
+            except Exception:
+                pass
         # Pin the subset before any checkpoint lands here, so a resume reads it back
         # rather than deriving it from a config the user may have edited in between.
         if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
@@ -4944,6 +4978,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "ts": time.time(),
                 }
             )
+            # Upload dispatch for huggingface/kaggle targets (MLX path already
+            # does this via _report_storage_push; the CUDA path never did, so
+            # those uploads silently never happened).
+            if saved_output_dir:
+                _report_cuda_storage_push(event_queue, saved_output_dir, config)
 
     except Exception as exc:
         _exc_str = str(exc).lower()
@@ -4994,6 +5033,39 @@ def _send_status(event_queue: Any, message: str) -> None:
 def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
     try:
         event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", cfg: dict) -> None:
+    """Upload dispatch for the CUDA/SFT + embedding worker paths.
+
+    Mirrors the MLX-only ``_report_storage_push`` (which the CUDA paths never
+    called): for ``huggingface``/``kaggle`` targets run the matching
+    ``_maybe_push_*_output`` helper and surface the structured result as
+    ``upload_status`` + ``status``/``warning`` events the UI already renders.
+    Never fatal -- artifacts already live on disk.
+    """
+    target = str(cfg.get("storage_target") or "").strip().lower()
+    if target == "huggingface":
+        res = _maybe_push_hf_output(output_dir_local, cfg)
+        label, url_key = "Hugging Face", "repo_url"
+    elif target == "kaggle":
+        res = _maybe_push_kaggle_output(output_dir_local, cfg)
+        label, url_key = "Kaggle Dataset", "dataset_url"
+    else:
+        return
+    if not res:
+        return
+    url = res.get(url_key)
+    error = res.get("error")
+    try:
+        if res.get("ok") and url:
+            event_queue.put({"type": "upload_status", "ok": True, "repo_url": url, "error": None, "ts": time.time()})
+            event_queue.put({"type": "status", "message": f"{label} upload complete: {url}", "ts": time.time()})
+        elif error:
+            event_queue.put({"type": "upload_status", "ok": False, "repo_url": None, "error": error, "ts": time.time()})
+            event_queue.put({"type": "warning", "message": f"{label} upload failed: {error}", "ts": time.time()})
     except Exception:
         pass
 
@@ -5561,8 +5633,40 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             model_name,
             config.get("project_name"),
         )
-    output_dir = str(resolve_output_dir(output_dir))
+    # Multi-storage-target (embedding path): same silent-local fallback as the
+    # SFT path had -- route non-local targets through the cloud-aware resolver.
+    _emb_storage_target = str(config.get("storage_target") or "").strip().lower() or "local"
+    if _emb_storage_target != "local":
+        from utils.paths import resolve_storage_target_write_dir as _resolve_target_dir
+
+        _explicit = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+            resume_from_checkpoint
+        )
+        _default_name = _explicit or build_default_output_dir_name(
+            model_name,
+            config.get("project_name"),
+        )
+        _t, _resolved = _resolve_target_dir(
+            _emb_storage_target,
+            _explicit or None,
+            str(_default_name),
+            hf_repo_id=config.get("hf_repo_id"),
+        )
+        output_dir = str(_resolved)
+    else:
+        output_dir = str(resolve_output_dir(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    logger.info("Embedding training storage_target=%s output_dir=%s", _emb_storage_target, output_dir)
+    _send_status(event_queue, f"Saving outputs to: {output_dir}")
+    if _emb_storage_target in ("google_drive", "kaggle"):
+        try:
+            from utils.paths import _cloud_target_hint as _emb_hint
+
+            _hint_ok, _hint_reason = _emb_hint(_emb_storage_target)
+            if not _hint_ok:
+                event_queue.put({"type": "warning", "message": _hint_reason, "ts": time.time()})
+        except Exception:
+            pass
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)
@@ -5695,3 +5799,4 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             "ts": time.time(),
         }
     )
+    _report_cuda_storage_push(event_queue, output_dir, config)

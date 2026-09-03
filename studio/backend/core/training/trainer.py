@@ -3727,7 +3727,19 @@ class UnslothTrainer:
                 import wandb
                 wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
 
-            output_dir = str(resolve_output_dir(training_args.get("output_dir")))
+            # Cloud save destinations (Google Drive / Kaggle) resolve outside
+            # outputs_root by design; admit them when they sit under an active
+            # cloud root, otherwise keep the strict local containment.
+            _raw_output_dir = training_args.get("output_dir")
+            try:
+                output_dir = str(resolve_output_dir(_raw_output_dir))
+            except ValueError:
+                from utils.paths import is_cloud_root
+
+                if _raw_output_dir and is_cloud_root(Path(str(_raw_output_dir)).expanduser()):
+                    output_dir = str(Path(str(_raw_output_dir)).expanduser())
+                else:
+                    raise
             ensure_dir(Path(output_dir))
 
             # ========== AUDIO TRAINER BRANCH ==========

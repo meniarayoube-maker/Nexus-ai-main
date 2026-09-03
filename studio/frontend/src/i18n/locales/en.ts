@@ -2076,6 +2076,17 @@ export const en = {
       storageTargetGoogleDrive: "Google Drive",
       storageTargetHuggingFace: "Hugging Face",
       storageTargetKaggle: "Kaggle",
+      kagglePrivate: "Keep Kaggle dataset private",
+      kagglePrivateDescription:
+        "When enabled (default), the uploaded dataset is only visible to you. Disable to publish it publicly.",
+      kaggleUsername: "Kaggle Username",
+      kaggleUsernamePlaceholder: "my-kaggle-username",
+      kaggleUsernameDescription:
+        "Optional. Overrides the KAGGLE_USERNAME environment variable for this run.",
+      kaggleKey: "Kaggle API Key",
+      kaggleKeyPlaceholder: "xxxxxxxxxxxxxxxxxxxxxxxx",
+      kaggleKeyDescription:
+        "Optional. Overrides the KAGGLE_KEY environment variable. On Kaggle notebooks this is usually set automatically.",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",

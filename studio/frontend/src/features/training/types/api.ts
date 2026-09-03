@@ -14,6 +14,12 @@ export interface TrainingStartRequest {
   storage_target?: string | null;
   /** Hugging Face repo id when storage_target === "huggingface". */
   hf_repo_id?: string | null;
+  /** Kaggle dataset privacy (true = private, default). Only used for "kaggle". */
+  kaggle_private?: boolean | null;
+  /** Kaggle username override (falls back to KAGGLE_USERNAME env var). */
+  kaggle_username?: string | null;
+  /** Kaggle API key override (falls back to KAGGLE_KEY env var). */
+  kaggle_key?: string | null;
   training_type: string;
   hf_token: string | null;
   model_known_cached?: boolean;

@@ -2757,6 +2757,8 @@ def _maybe_push_kaggle_output(output_dir: "str | None", config: dict) -> dict:
         ok, dataset_url, error = push_output_to_kaggle(
             output_dir,
             is_private=bool(config.get("kaggle_private", True)),
+            username=config.get("kaggle_username") or None,
+            key=config.get("kaggle_key") or None,
         )
     except Exception as exc:  # noqa: BLE001 - structural failure; surface it, don't crush the run.
         message = f"Kaggle upload failed unexpectedly: {exc}"

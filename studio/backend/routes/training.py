@@ -1498,6 +1498,8 @@ async def start_training(
             "storage_target": ((request.storage_target or "").strip() or "") or None,
             "hf_repo_id": ((request.hf_repo_id or "").strip() or None),
             "kaggle_private": request.kaggle_private,
+            "kaggle_username": (request.kaggle_username or "").strip() or None,
+            "kaggle_key": (request.kaggle_key or "").strip() or None,
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "require_exact_resume_resources": resume_requires_exact_resources,
             "require_exact_model_resource": resume_requires_exact_model,

@@ -963,6 +963,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setStorageTarget: (storageTarget) =>
           setUserEdit({ storageTarget: storageTarget ?? null }),
         setHfRepoId: (hfRepoId) => setUserEdit({ hfRepoId: hfRepoId ?? null }),
+        setKagglePrivate: (kagglePrivate) =>
+          setUserEdit({ kagglePrivate: kagglePrivate ?? null }),
+        setKaggleUsername: (kaggleUsername) =>
+          setUserEdit({ kaggleUsername: kaggleUsername ?? null }),
+        setKaggleKey: (kaggleKey) => setUserEdit({ kaggleKey: kaggleKey ?? null }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
           const state = get();

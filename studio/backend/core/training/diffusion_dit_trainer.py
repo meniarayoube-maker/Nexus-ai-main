@@ -2400,6 +2400,8 @@ def _train_dit(
                 ok, _kaggle_url, error = push_output_to_kaggle(
                     out_dir,
                     is_private=bool(getattr(cfg, "kaggle_private", True)),
+                    username=getattr(cfg, "kaggle_username", None) or None,
+                    key=getattr(cfg, "kaggle_key", None) or None,
                 )
             except Exception as exc:  # noqa: BLE001 -- adapter already saved locally
                 _kaggle_url = None

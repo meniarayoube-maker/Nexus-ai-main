@@ -62,6 +62,9 @@ export const initialTrainingConfigState: TrainingConfigState = {
   projectName: "",
   storageTarget: null,
   hfRepoId: null,
+  kagglePrivate: null,
+  kaggleUsername: null,
+  kaggleKey: null,
   trainingMethod: "qlora",
   trainingMethodProvenance: {
     learningRateManuallySet: false,

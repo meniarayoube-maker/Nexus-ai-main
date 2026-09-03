@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -52,6 +53,9 @@ export function ParamsSection({
       projectName: state.projectName,
       storageTarget: state.storageTarget,
       hfRepoId: state.hfRepoId,
+      kagglePrivate: state.kagglePrivate,
+      kaggleUsername: state.kaggleUsername,
+      kaggleKey: state.kaggleKey,
       trainingMethod: state.trainingMethod,
       epochs: state.epochs,
       contextLength: state.contextLength,
@@ -62,6 +66,9 @@ export function ParamsSection({
       setProjectName: state.setProjectName,
       setStorageTarget: state.setStorageTarget,
       setHfRepoId: state.setHfRepoId,
+      setKagglePrivate: state.setKagglePrivate,
+      setKaggleUsername: state.setKaggleUsername,
+      setKaggleKey: state.setKaggleKey,
       setEpochs: state.setEpochs,
       setContextLength: state.setContextLength,
       setLearningRate: state.setLearningRate,
@@ -214,6 +221,70 @@ export function ParamsSection({
                 placeholder="my-org/my-model"
                 maxLength={120}
               />
+            )}
+            {store.storageTarget === "kaggle" && (
+              <div className="flex flex-col gap-2 rounded-md border border-border p-2.5 animate-in fade-in-0 slide-in-from-bottom-1 duration-200">
+                <label className="flex cursor-pointer items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    {t("studio.params.kagglePrivate")}
+                    <FieldHint
+                      text={t("studio.params.kagglePrivateDescription")}
+                      label={t("studio.params.kagglePrivate")}
+                    />
+                  </span>
+                  <Switch
+                    checked={store.kagglePrivate ?? true}
+                    onCheckedChange={(checked) =>
+                      store.setKagglePrivate(checked)
+                    }
+                  />
+                </label>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      {t("studio.params.kaggleUsername")}
+                      <span className="font-normal text-muted-foreground/70">
+                        {t("studio.params.optional")}
+                      </span>
+                      <FieldHint
+                        text={t("studio.params.kaggleUsernameDescription")}
+                        label={t("studio.params.kaggleUsername")}
+                      />
+                    </span>
+                  </label>
+                  <Input
+                    value={store.kaggleUsername || ""}
+                    onChange={(event) =>
+                      store.setKaggleUsername(event.target.value)
+                    }
+                    placeholder={t("studio.params.kaggleUsernamePlaceholder")}
+                    autoComplete="off"
+                    maxLength={120}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      {t("studio.params.kaggleKey")}
+                      <span className="font-normal text-muted-foreground/70">
+                        {t("studio.params.optional")}
+                      </span>
+                      <FieldHint
+                        text={t("studio.params.kaggleKeyDescription")}
+                        label={t("studio.params.kaggleKey")}
+                      />
+                    </span>
+                  </label>
+                  <Input
+                    type="password"
+                    value={store.kaggleKey || ""}
+                    onChange={(event) => store.setKaggleKey(event.target.value)}
+                    placeholder={t("studio.params.kaggleKeyPlaceholder")}
+                    autoComplete="off"
+                    maxLength={255}
+                  />
+                </div>
+              </div>
             )}
           </div>
 

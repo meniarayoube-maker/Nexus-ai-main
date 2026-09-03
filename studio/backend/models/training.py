@@ -160,6 +160,22 @@ class TrainingStartRequest(BaseModel):
             "is 'kaggle'."
         ),
     )
+    kaggle_username: Optional[str] = Field(
+        None,
+        max_length = 255,
+        description = (
+            "Optional Kaggle username override.  When set it wins over the "
+            "KAGGLE_USERNAME environment variable for this run."
+        ),
+    )
+    kaggle_key: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = (
+            "Optional Kaggle API key override.  When set it wins over the "
+            "KAGGLE_KEY environment variable for this run."
+        ),
+    )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     max_seq_length: int = Field(2048, description = "Maximum sequence length")
     vision_image_size: Optional[int] = Field(
@@ -935,6 +951,16 @@ class DiffusionTrainingStartRequest(BaseModel):
             "Privacy for Kaggle dataset uploads: True (default) = private; "
             "False = public. Only used when storage_target is 'kaggle'."
         ),
+    )
+    kaggle_username: Optional[str] = Field(
+        None,
+        max_length = 255,
+        description = "Optional Kaggle username override (wins over KAGGLE_USERNAME env var).",
+    )
+    kaggle_key: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Optional Kaggle API key override (wins over KAGGLE_KEY env var).",
     )
     cache_latents: bool = Field(
         True, description = "Precompute VAE latents once and free the VAE for the run"

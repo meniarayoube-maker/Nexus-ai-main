@@ -188,6 +188,36 @@ def resolve_storage_target_write_dir(
     return STORAGE_TARGET_LOCAL, _resolve_contained(output_dir, run_name)
 
 
+def _cloud_target_hint(target: str) -> "tuple[bool, str]":
+    """Return ``(usable, reason)`` for a cloud *target*.
+
+    ``usable`` is True when the target's mount root is actually reachable on
+    this host. When False, *reason* is a short, user-facing explanation of
+    *why* the target is not usable (for example, Drive is not mounted) -- so a
+    caller can surface a visible warning instead of silently falling back to a
+    local path (which on an ephemeral Colab/Kaggle runtime is lost at session
+    end).
+    """
+    if target == STORAGE_TARGET_GOOGLE_DRIVE:
+        if storage_target_override_root(target) is not None:
+            return True, ""
+        return (
+            False,
+            "Google Drive is not mounted on this runtime. Outputs will be saved "
+            "locally and lost when the session ends. Run `from google.colab import drive; "
+            "drive.mount('/content/drive')` first, or save to Local / Hugging Face.",
+        )
+    if target == STORAGE_TARGET_KAGGLE:
+        if storage_target_override_root(target) is not None:
+            return True, ""
+        return (
+            False,
+            "Kaggle working directory (/kaggle/working) is not mounted on this runtime. "
+            "Outputs will be saved locally instead of persisting to /kaggle/working.",
+        )
+    return True, ""
+
+
 def _normalize_target(target: Optional[str]) -> str:
     value = str(target or "").strip().lower()
     if value in STORAGE_TARGETS:

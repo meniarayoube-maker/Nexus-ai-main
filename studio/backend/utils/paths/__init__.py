@@ -62,6 +62,7 @@ from .storage_targets import (
     is_cloud_root,
     resolve_storage_target_write_dir,
     storage_targets_info,
+    _cloud_target_hint,
 )
 
 # Re-export shim: mark project-path helpers as used so the import-hoist
@@ -129,6 +130,7 @@ __all__ = [
     "is_cloud_root",
     "resolve_storage_target_write_dir",
     "storage_targets_info",
+    "_cloud_target_hint",
 ]
 
 # Bind the re-exports so the import-hoist verifier counts them as used.

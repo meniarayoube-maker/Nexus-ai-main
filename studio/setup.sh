@@ -3547,6 +3547,31 @@ PY
     fi
 fi
 
+# ── Google Drive (Colab) ──
+# Best-effort mount so "Save to Google Drive" works without a manual cell.
+# Only mounts when not already mounted; never fails the install. The mount is
+# INTERACTIVE (it prints an authorization link and waits for the pasted code),
+# so it must NOT go through the quiet runners (which redirect stdout and would
+# hide the link). We run it directly, restore set -e afterwards, and degrade
+# gracefully when the user skips it.
+if [ "$IS_COLAB" = true ] && [ ! -e /content/drive ]; then
+    substep "Mounting Google Drive (best-effort)..."
+    echo "   A Google authorization link will appear. Open it, authorize, then"
+    echo "   paste the returned code below (or press Ctrl+C to skip)."
+    set +e
+    python - <<'PYEOF'
+from google.colab import drive
+drive.mount("/content/drive")
+PYEOF
+    _drive_mount_rc=$?
+    set -e
+    if [ "$_drive_mount_rc" -ne 0 ] || [ ! -e /content/drive ]; then
+        step "drive" "Google Drive not mounted; 'Save to Google Drive' will fall back to local" "$C_WARN"
+    else
+        step "drive" "Google Drive mounted" "$C_OK"
+    fi
+fi
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""

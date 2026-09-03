@@ -3289,6 +3289,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    # Surface a visible warning when the user picked a cloud save destination
+    # whose mount is not reachable here. Without this, a "google_drive"/"kaggle"
+    # choice silently falls back to a local path that is lost when an ephemeral
+    # Colab/Kaggle session ends -- confusing and surprising.
+    _storage_hint_target = str(config.get("storage_target") or "").strip().lower()
+    if _storage_hint_target in ("google_drive", "kaggle"):
+        from utils.paths import _cloud_target_hint
+
+        _hint_ok, _hint_reason = _cloud_target_hint(_storage_hint_target)
+        if not _hint_ok:
+            _send("warning", message = _hint_reason)
     # Pin the subset before any checkpoint lands here; a resume reads it back.
     if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
         mlx_max_train_rows

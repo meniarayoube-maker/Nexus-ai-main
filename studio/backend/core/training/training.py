@@ -265,6 +265,21 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     for key in ("output_dir", "allow_external_output_dir"):
         if key in values:
             config[key] = values.get(key)
+    # Multi-storage-target / push credentials. These are passed by the train
+    # route into kwargs but were NOT part of the whitelist above, so they were
+    # silently dropped when the worker config was built -- every MLX run fell
+    # back to "local" regardless of the selected Save Destination. Also sweep
+    # the generic HF fields (the push helper reads hf_token / hf_repo_id).
+    for _key in (
+        "storage_target",
+        "hf_repo_id",
+        "hf_private",
+        "kaggle_private",
+        "kaggle_username",
+        "kaggle_key",
+    ):
+        if _key in values:
+            config[_key] = values.get(_key)
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.

@@ -238,6 +238,38 @@ class LegacyDownloadApi(DownloadApi):
         (target / "adapter_model.safetensors").write_bytes(b"fake-weights")
 
 
+class FilesDownloadApi:
+    """Current kaggle-api shape: whole-dataset download is ``dataset_download_files``."""
+
+    created = []
+
+    def __init__(self):
+        self.calls = []
+        FilesDownloadApi.created.append(self)
+
+    def authenticate(self):
+        self.calls.append(("authenticate",))
+
+    def dataset_download_files(self, dataset, path=None, force=False, quiet=True, unzip=False):
+        self.calls.append(("download_files", dataset, path, force, quiet, unzip))
+        target = Path(path)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "adapter_model.safetensors").write_bytes(b"fake-weights")
+
+
+class NoDownloadApi:
+    """Client build with no dataset download method at all."""
+
+    created = []
+
+    def __init__(self):
+        self.calls = []
+        NoDownloadApi.created.append(self)
+
+    def authenticate(self):
+        self.calls.append(("authenticate",))
+
+
 def test_validate_dataset_slug():
     assert _validate_dataset_slug(" owner/slug ") == "owner/slug"
     assert _validate_dataset_slug("owner/slug/") == "owner/slug"
@@ -308,3 +340,32 @@ def test_download_api_failure_returns_reason(monkeypatch, tmp_path):
     assert ok is False
     assert path is None
     assert error is not None and "not found" in error.lower()
+
+
+def test_download_prefers_download_files_method(monkeypatch, tmp_path):
+    FilesDownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, FilesDownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    dest = tmp_path / "restored_run"
+
+    ok, path, error = download_output_from_kaggle("owner/my-data", str(dest))
+
+    assert (ok, error) == (True, None)
+    assert path == str(dest)
+    assert (dest / "adapter_model.safetensors").is_file()
+    api = FilesDownloadApi.created[-1]
+    assert ("download_files", "owner/my-data", str(dest), False, True, True) in api.calls
+
+
+def test_download_without_any_method_is_precise(monkeypatch, tmp_path):
+    NoDownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, NoDownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+
+    ok, path, error = download_output_from_kaggle("owner/my-data", str(tmp_path / "x"))
+
+    assert ok is False
+    assert path is None
+    assert error is not None and "no" in error.lower() and "download" in error.lower()

@@ -224,10 +224,27 @@ def download_output_from_kaggle(
     if auth_error is not None or api is None:
         return (False, None, auth_error or "Kaggle authentication failed.")
 
+    # Method names differ across kaggle-api releases: whole-dataset download
+    # is ``dataset_download_files`` in current builds (incl. 2.0.x); older or
+    # alternate builds expose ``dataset_download``.  Probe in order instead of
+    # assuming one name so a missing method is a precise error, not a crash.
+    method_name = next(
+        (name for name in ("dataset_download_files", "dataset_download") if hasattr(api, name)),
+        None,
+    )
+    if method_name is None:
+        reason = (
+            "Kaggle download failed: this kaggle package version has no "
+            "dataset download API.  Upgrade with ``pip install -U kaggle`` "
+            "and retry."
+        )
+        logger.warning("Kaggle download failed for %s: %s", slug, reason)
+        return (False, None, reason)
+
     try:
         _call_kaggle_api(
             api,
-            "dataset_download",
+            method_name,
             slug,
             ("dataset", "dataset_slug", "dataset_name", "dataset_id"),
             {
@@ -241,13 +258,17 @@ def download_output_from_kaggle(
         logger.info("Kaggle dataset downloaded: %s -> %s", slug, dest)
         return (True, str(dest), None)
     except Exception as exc:  # noqa: BLE001
-        reason = _describe_error(exc)
+        reason = _describe_error(exc, operation = "download")
         logger.warning("Kaggle download failed for %s -> %s: %s", slug, dest, reason)
         return (False, None, reason)
 
 
-def _describe_error(exc: Exception) -> str:
-    """Map a kaggle-package / Kaggle-API error to a precise, user-facing reason."""
+def _describe_error(exc: Exception, *, operation: str = "upload") -> str:
+    """Map a kaggle-package / Kaggle-API error to a precise, user-facing reason.
+
+    ``operation`` is ``"upload"`` or ``"download"`` so the fallback message
+    names the step that actually failed.
+    """
     text = str(exc) or exc.__class__.__name__
     lowered = text.lower()
 
@@ -280,7 +301,13 @@ def _describe_error(exc: Exception) -> str:
             "automatic; otherwise set KAGGLE_USERNAME + KAGGLE_KEY or write "
             "~/.kaggle/kaggle.json."
         )
-    return f"Kaggle upload failed: {text}"
+    if "has no attribute" in lowered:
+        return (
+            f"Kaggle {operation} failed: this kaggle package version has no "
+            f"matching API ({text}).  Upgrade with ``pip install -U kaggle`` "
+            "and retry."
+        )
+    return f"Kaggle {operation} failed: {text}"
 
 
 # ---------------------------------------------------------------------------

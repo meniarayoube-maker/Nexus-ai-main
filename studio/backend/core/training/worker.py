@@ -4975,14 +4975,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         progress = trainer.get_training_progress()
         if progress.error:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": progress.error,
-                    "stack": "",
-                    "ts": time.time(),
-                }
-            )
+            payload = {
+                "type": "error",
+                "error": progress.error,
+                "stack": "",
+                "ts": time.time(),
+            }
+            if getattr(trainer, "stop_save_failed", False):
+                # A user stop finalizes as 'stopped'; keep this failure's
+                # error status so history explains the missing resume state,
+                # and block resume from the stale bundle (MLX protocol).
+                payload["keep_error_status"] = True
+                payload["resume_blocked"] = True
+            event_queue.put(payload)
         else:
             saved_output_dir = (
                 None if trainer.should_stop and not trainer.save_on_stop else output_dir

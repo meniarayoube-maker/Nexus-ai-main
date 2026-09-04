@@ -197,6 +197,75 @@ def is_resume_checkpoint_valid(
     return step_valid and valid_bundle
 
 
+def stop_checkpoint_dir_name(global_step: int) -> str:
+    """Canonical ``checkpoint-{step}`` directory name for a stop-save bundle."""
+    return f"checkpoint-{int(global_step)}"
+
+
+def ensure_stop_checkpoint_bundle(trainer_like, output_dir) -> Optional[str]:
+    """Verify a stop-and-save left a resume-valid bundle; backfill what's missing.
+
+    Stop-and-save promises a *resumable* checkpoint, not just weights -- but
+    the underlying ``_save_checkpoint`` may skip optimizer/scheduler state
+    (e.g. adapter-only fast paths), leaving a bundle
+    :func:`is_resume_checkpoint_valid` rejects and the run silently
+    unresumable.  This fills the missing essentials from the live trainer so
+    the promise holds.
+
+    ``trainer_like`` needs the HF Trainer surface: ``.state.global_step``,
+    ``.state.save_to_json(path)``, ``.optimizer.state_dict()``,
+    ``.scheduler.state_dict()``.  Returns None on success, else a user-facing
+    reason.  Never raises: a verification failure must surface as a message
+    (the caller finalizes the run as an explained error), not a crash.
+    """
+    try:
+        import torch  # local import: keeps this module light for unit tests.
+
+        root = Path(output_dir).expanduser()
+        state = getattr(trainer_like, "state", None)
+        try:
+            step = int(getattr(state, "global_step", 0) or 0)
+        except (TypeError, ValueError):
+            step = 0
+        ckpt = root / stop_checkpoint_dir_name(step)
+        try:
+            ckpt.mkdir(parents = True, exist_ok = True)
+        except OSError as exc:
+            return f"Could not create checkpoint directory {ckpt}: {exc}"
+        if is_resume_checkpoint_valid(ckpt):
+            return None
+        optimizer = getattr(trainer_like, "optimizer", None)
+        scheduler = getattr(trainer_like, "scheduler", None)
+        try:
+            torch.save(
+                optimizer.state_dict() if optimizer is not None else {},
+                ckpt / "optimizer.pt",
+            )
+            torch.save(
+                scheduler.state_dict() if scheduler is not None else {},
+                ckpt / "scheduler.pt",
+            )
+            state.save_to_json(str(ckpt / "trainer_state.json"))
+        except Exception as exc:
+            return f"Could not write stop checkpoint state into {ckpt}: {exc}"
+        if not _has_model_state(ckpt):
+            # The explicit save wrote no weights here at all (e.g. an
+            # adapter-only fast path pointed elsewhere); persist them so the
+            # bundle is self-contained.
+            try:
+                trainer_like.save_model(str(ckpt))
+            except Exception as exc:
+                return f"Could not write stop checkpoint weights into {ckpt}: {exc}"
+        if is_resume_checkpoint_valid(ckpt):
+            return None
+        return (
+            f"Stop checkpoint at {ckpt} is still missing trainer state after "
+            "backfill; this run cannot be resumed, only reused for inference."
+        )
+    except Exception as exc:
+        return f"Could not verify stop checkpoint: {exc}"
+
+
 def artifacts_present(path_value: Optional[str]) -> bool:
     if not path_value:
         return False

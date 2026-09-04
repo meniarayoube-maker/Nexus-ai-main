@@ -295,6 +295,10 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        # Set when a stop-and-save leaves no resume-valid bundle (mirrors the
+        # MLX worker protocol): the worker keeps this run an explained error
+        # instead of a silent "saved but cannot resume".
+        self.stop_save_failed = False
         self.load_in_4bit = True
 
         self.is_cpt = False  # Continued Pretraining
@@ -728,6 +732,19 @@ class UnslothTrainer:
             self.trainer.save_model()
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
+            # Stop-and-save promises a *resumable* checkpoint, not just model
+            # files: verify the bundle and backfill missing trainer state
+            # (optimizer/scheduler), which adapter-only fast paths may skip.
+            from core.training.resume import ensure_stop_checkpoint_bundle
+
+            failure = ensure_stop_checkpoint_bundle(self.trainer, output_dir)
+            if failure is not None:
+                self.stop_save_failed = True
+                raise RuntimeError(
+                    "Failed to save a resumable checkpoint after stop. "
+                    "Model files were saved, but this run cannot be resumed. "
+                    f"({failure})"
+                )
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(

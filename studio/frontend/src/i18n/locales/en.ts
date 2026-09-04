@@ -2093,6 +2093,8 @@ export const en = {
         "Download a finished run's Kaggle dataset into this machine and register it in history, using the username and key above.",
       kaggleRestoreHfDatasetPlaceholder:
         "Original training dataset, e.g. unsloth/alpaca-cleaned (needed to resume)",
+      kaggleRestoreRunNamePlaceholder:
+        "Run name (optional -- change it if the folder already exists)",
       kaggleRestoreButton: "Restore from Kaggle",
       kaggleRestoreBusy: "Restoring...",
       loraSettings: "LoRA Settings",

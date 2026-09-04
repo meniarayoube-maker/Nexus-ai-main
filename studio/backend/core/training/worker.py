@@ -3289,6 +3289,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    # Persist the full session config beside the checkpoints (see the CUDA
+    # path): restores rebuild from this file instead of manual fields.
+    try:
+        from core.training.run_config_snapshot import write_run_config_snapshot as _mlx_snapshot
+
+        _mlx_snapshot(output_dir, config)
+    except Exception:
+        pass
     # Surface a visible warning when the user picked a cloud save destination
     # whose mount is not reachable here. Without this, a "google_drive"/"kaggle"
     # choice silently falls back to a local path that is lost when an ephemeral
@@ -4898,6 +4906,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     event_queue.put({"type": "warning", "message": _hint_reason, "ts": time.time()})
             except Exception:
                 pass
+        # Persist the full session config beside the checkpoints: a later
+        # restore (new Colab/Kaggle session) rebuilds the run from this file
+        # instead of asking for dataset/type/format manually.
+        try:
+            from core.training.run_config_snapshot import write_run_config_snapshot
+
+            write_run_config_snapshot(output_dir, config)
+        except Exception:
+            pass
         # Pin the subset before any checkpoint lands here, so a resume reads it back
         # rather than deriving it from a config the user may have edited in between.
         if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
@@ -5667,6 +5684,13 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 event_queue.put({"type": "warning", "message": _hint_reason, "ts": time.time()})
         except Exception:
             pass
+    # Same session snapshot as the SFT path so restores rebuild without manual fields.
+    try:
+        from core.training.run_config_snapshot import write_run_config_snapshot as _write_snapshot
+
+        _write_snapshot(output_dir, config)
+    except Exception:
+        pass
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

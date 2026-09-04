@@ -18,6 +18,10 @@ from loggers import get_logger
 
 from auth.authentication import authenticated_without_credential, get_current_subject
 from core.training.resume import artifacts_present, can_resume_run, has_resume_state
+from core.training.run_config_snapshot import (
+    build_restored_config,
+    load_run_config_snapshot,
+)
 from models import (
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
@@ -550,29 +554,46 @@ async def restore_training_run_from_kaggle(
             },
         )
     dest_path = Path(dest)
+    # Reuse loop: deleting a history row keeps its artifacts, so repeating a
+    # restore must not 409 when the directory already holds usable artifacts --
+    # just register it.  Only a non-empty but unusable directory blocks (stale
+    # or partial download): remove that folder or enter a different Run name.
+    need_download = True
     if dest_path.exists() and any(dest_path.iterdir()):
-        raise HTTPException(
-            status_code = 409,
-            detail = {
-                "code": "training_restore_exists",
-                "message": f"Already restored at {dest_path}.",
-            },
+        already_usable = await asyncio.to_thread(has_resume_state, str(dest_path))
+        if not already_usable:
+            already_usable = await asyncio.to_thread(artifacts_present, str(dest_path))
+        if already_usable:
+            need_download = False
+            logger.info("Restore reusing existing artifacts at %s", dest_path)
+        else:
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "code": "training_restore_exists",
+                    "message": (
+                        f"{dest_path} already exists but holds no usable "
+                        "checkpoint. Remove that folder or enter a different "
+                        "Run name."
+                    ),
+                },
+            )
+    if need_download:
+        ok, _path, error = await asyncio.to_thread(
+            download_output_from_kaggle,
+            slug,
+            str(dest_path),
+            username = payload.kaggle_username,
+            key = payload.kaggle_key,
         )
-    ok, _path, error = await asyncio.to_thread(
-        download_output_from_kaggle,
-        slug,
-        str(dest_path),
-        username = payload.kaggle_username,
-        key = payload.kaggle_key,
-    )
-    if not ok:
-        raise HTTPException(
-            status_code = 502,
-            detail = {
-                "code": "training_restore_download_failed",
-                "message": error or "Kaggle download failed.",
-            },
-        )
+        if not ok:
+            raise HTTPException(
+                status_code = 502,
+                detail = {
+                    "code": "training_restore_download_failed",
+                    "message": error or "Kaggle download failed.",
+                },
+            )
     usable = await asyncio.to_thread(has_resume_state, str(dest_path))
     if not usable:
         usable = await asyncio.to_thread(artifacts_present, str(dest_path))
@@ -587,29 +608,23 @@ async def restore_training_run_from_kaggle(
                 ),
             },
         )
+    # The snapshot written at training time is the truth about the original
+    # session (model, type, dataset, hyperparameters); inference and manual
+    # fields only fill gaps for datasets uploaded before this feature.
+    file_config = await asyncio.to_thread(load_run_config_snapshot, str(dest_path))
     final_step, base_model, training_type, _has_adapter = _restored_run_facts(dest_path)
+    manual_hf_dataset = (payload.hf_dataset or "").strip() or None
+    config = build_restored_config(
+        file_config = file_config,
+        inferred_model = base_model or str(dest_path),
+        inferred_training_type = training_type,
+        manual_hf_dataset = manual_hf_dataset,
+        slug = slug,
+        storage_target = target,
+    )
+    model_name = str(config["model_name"])
     now = datetime.now(timezone.utc).isoformat()
     run_id = f"restored_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    # The row's model must stay resolvable: an adapter base id when the
-    # dataset has one, otherwise the LOCAL output dir itself.  A bare slug
-    # (e.g. a full-finetune dataset name) is not a loadable model id -- the
-    # gates (upgrade check, remote-code scan) would probe it as a Hub repo,
-    # fail, and block with a misleading "CRITICAL" verdict.  The local path
-    # scans/loads offline from files already on disk.
-    model_name = base_model or str(dest_path)
-    # training_type/format_type are REQUIRED by TrainingStartRequest: without
-    # them any resume attempt dies with a bare 422.  The dataset cannot be
-    # recovered from artifacts, so it stays user-supplied (optional here;
-    # resume fails precisely with "No dataset specified" when absent).
-    hf_dataset = (payload.hf_dataset or "").strip() or None
-    config = {
-        "model_name": model_name,
-        "restored_from_kaggle": slug,
-        "storage_target": target,
-        "training_type": training_type,
-        "format_type": "alpaca",
-        "hf_dataset": hf_dataset,
-    }
     try:
         await asyncio.to_thread(
             create_run,

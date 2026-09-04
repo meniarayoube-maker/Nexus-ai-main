@@ -120,6 +120,7 @@ export function ParamsSection({
   // Restore-from-Kaggle form (local state; credentials come from the store above).
   const [restoreDataset, setRestoreDataset] = useState("");
   const [restoreHfDataset, setRestoreHfDataset] = useState("");
+  const [restoreRunName, setRestoreRunName] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState<{
     ok: boolean;
@@ -132,13 +133,14 @@ export function ParamsSection({
     setRestoreBusy(true);
     setRestoreMessage(null);
     try {
-      await restoreTrainingRunFromKaggle(dataset, null, undefined, {
+      await restoreTrainingRunFromKaggle(dataset, restoreRunName.trim() || null, undefined, {
         username: store.kaggleUsername,
         key: store.kaggleKey,
         hfDataset: restoreHfDataset,
       });
       setRestoreDataset("");
       setRestoreHfDataset("");
+      setRestoreRunName("");
       setRestoreMessage({
         ok: true,
         text: translate("studio.history.restoreSuccess"),
@@ -352,6 +354,14 @@ export function ParamsSection({
                     placeholder={t("studio.params.kaggleRestoreHfDatasetPlaceholder")}
                     autoComplete="off"
                     maxLength={160}
+                    disabled={restoreBusy}
+                  />
+                  <Input
+                    value={restoreRunName}
+                    onChange={(event) => setRestoreRunName(event.target.value)}
+                    placeholder={t("studio.params.kaggleRestoreRunNamePlaceholder")}
+                    autoComplete="off"
+                    maxLength={80}
                     disabled={restoreBusy}
                   />
                   <button

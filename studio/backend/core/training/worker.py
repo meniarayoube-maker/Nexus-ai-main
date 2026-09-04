@@ -3606,21 +3606,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         Runs on a completed/stopped run that actually saved an output directory.
         For each supported upload target (``huggingface``, ``kaggle``) the
-        appropriate ``_maybe_push_*_output`` is called, and the structured result
+        appropriate ``_maybe_push_*_output`` helper is called, and the structured result
         is surfaced through the run status channel the UI already renders: a
         ``status`` message on success, a ``warning`` with a precise reason on
         failure.  A structured ``upload_status`` event is also emitted for any
         consumer that wants the machine-readable result.
+
+        MUST run BEFORE the ``complete`` event (call sites do): the parent's
+        stop watchdog starts its kill grace when ``complete`` lands, so an
+        upload dispatched after it can be SIGKILLed mid-flight.
         """
         target = str(cfg.get("storage_target") or "").strip().lower()
         if target == "huggingface":
-            res = _maybe_push_hf_output(output_dir_local, cfg)
             label = "Hugging Face"
             url_key = "repo_url"
+            _send("status", status_message = f"Uploading to {label}...")
+            res = _maybe_push_hf_output(output_dir_local, cfg)
         elif target == "kaggle":
-            res = _maybe_push_kaggle_output(output_dir_local, cfg)
             label = "Kaggle Dataset"
             url_key = "dataset_url"
+            _send("status", status_message = f"Uploading to {label}...")
+            res = _maybe_push_kaggle_output(output_dir_local, cfg)
         else:
             # local / google_drive: path-only, no upload step.
             return
@@ -3663,8 +3669,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 # Stop-and-save promises a resumable checkpoint, not just model files.
                 if not _stop_checkpoint_ok():
                     return
-                _send("complete", output_dir = output_dir, status_message = "Training stopped")
+                # Upload BEFORE complete: the parent's kill grace starts at
+                # complete, so a post-complete upload can be SIGKILLed mid-flight.
                 _report_storage_push(output_dir, config)
+                _send("complete", output_dir = output_dir, status_message = "Training stopped")
         else:
             _send("status", status_message = "Saving model...")
             mx.synchronize()
@@ -3672,8 +3680,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             # A save-stop can race the natural final save; it made the same promise.
             if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
                 return
-            _send("complete", output_dir = output_dir, status_message = "Training completed")
             _report_storage_push(output_dir, config)
+            _send("complete", output_dir = output_dir, status_message = "Training completed")
     finally:
         _finish_tracking()
 
@@ -4992,6 +5000,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             saved_output_dir = (
                 None if trainer.should_stop and not trainer.save_on_stop else output_dir
             )
+            # Upload dispatch for huggingface/kaggle targets BEFORE complete:
+            # the parent's kill grace starts at complete, so a post-complete
+            # upload can be SIGKILLed mid-flight. Never fatal to completion.
+            if saved_output_dir:
+                try:
+                    _report_cuda_storage_push(event_queue, saved_output_dir, config)
+                except Exception as exc:
+                    logger.warning("Storage upload dispatch failed: %s", exc)
             event_queue.put(
                 {
                     "type": "complete",
@@ -5000,11 +5016,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "ts": time.time(),
                 }
             )
-            # Upload dispatch for huggingface/kaggle targets (MLX path already
-            # does this via _report_storage_push; the CUDA path never did, so
-            # those uploads silently never happened).
-            if saved_output_dir:
-                _report_cuda_storage_push(event_queue, saved_output_dir, config)
 
     except Exception as exc:
         _exc_str = str(exc).lower()
@@ -5062,21 +5073,34 @@ def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
 def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", cfg: dict) -> None:
     """Upload dispatch for the CUDA/SFT + embedding worker paths.
 
-    Mirrors the MLX-only ``_report_storage_push`` (which the CUDA paths never
-    called): for ``huggingface``/``kaggle`` targets run the matching
+    For ``huggingface``/``kaggle`` targets run the matching
     ``_maybe_push_*_output`` helper and surface the structured result as
     ``upload_status`` + ``status``/``warning`` events the UI already renders.
     Never fatal -- artifacts already live on disk.
+
+    MUST be called BEFORE the ``complete`` event is emitted (call sites do):
+    the parent's stop watchdog starts its kill grace when ``complete`` lands,
+    so a post-complete upload can be SIGKILLed mid-flight (observed: worker
+    force-terminated 15s after save during a Kaggle upload).
     """
     target = str(cfg.get("storage_target") or "").strip().lower()
     if target == "huggingface":
-        res = _maybe_push_hf_output(output_dir_local, cfg)
         label, url_key = "Hugging Face", "repo_url"
     elif target == "kaggle":
-        res = _maybe_push_kaggle_output(output_dir_local, cfg)
         label, url_key = "Kaggle Dataset", "dataset_url"
     else:
         return
+    try:
+        event_queue.put({"type": "status", "message": f"Uploading to {label}...", "ts": time.time()})
+    except Exception:
+        pass
+    try:
+        if target == "huggingface":
+            res = _maybe_push_hf_output(output_dir_local, cfg)
+        else:
+            res = _maybe_push_kaggle_output(output_dir_local, cfg)
+    except Exception as exc:
+        res = {"ok": False, "error": f"upload crashed: {exc}"}
     if not res:
         return
     url = res.get(url_key)
@@ -5820,6 +5844,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 11. Done ──
+    # Upload BEFORE complete (same watchdog-grace reason as the SFT path).
+    try:
+        _report_cuda_storage_push(event_queue, output_dir, config)
+    except Exception as exc:
+        logger.warning("Storage upload dispatch failed: %s", exc)
     event_queue.put(
         {
             "type": "complete",
@@ -5828,4 +5857,3 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             "ts": time.time(),
         }
     )
-    _report_cuda_storage_push(event_queue, output_dir, config)

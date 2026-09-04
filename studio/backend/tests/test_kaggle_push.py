@@ -50,14 +50,14 @@ class RealStyleApi:
     def authenticate(self):
         self.calls.append(("authenticate",))
 
-    def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="zip"):
-        self.calls.append(("create_new", folder, public, quiet))
+    def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="skip"):
+        self.calls.append(("create_new", folder, public, quiet, dir_mode))
 
     def dataset_create_version(
         self, folder, version_notes="", quiet=True, convert_to_csv=True,
-        delete_old_versions=False, dir_mode="zip",
+        delete_old_versions=False, dir_mode="skip",
     ):
-        self.calls.append(("create_version", folder, version_notes))
+        self.calls.append(("create_version", folder, version_notes, dir_mode))
 
 
 class LegacyFolderPathApi(RealStyleApi):
@@ -95,7 +95,8 @@ def test_create_new_success_writes_full_metadata_and_url(monkeypatch, tmp_path):
     assert metadata["licenses"] == [{"name": "cc-by-sa-4.0"}]
     api = RealStyleApi.created[-1]
     assert ("authenticate",) in api.calls
-    assert ("create_new", str(run_dir), False, True) in api.calls
+    # Directories must ride along: dir_mode='zip', never the client's 'skip' default.
+    assert ("create_new", str(run_dir), False, True, "zip") in api.calls
 
 
 def test_public_flag_flows_to_api_and_metadata(monkeypatch, tmp_path):
@@ -111,7 +112,26 @@ def test_public_flag_flows_to_api_and_metadata(monkeypatch, tmp_path):
     metadata = json.loads((run_dir / "dataset-metadata.json").read_text(encoding="utf-8"))
     assert metadata["isPrivate"] is False
     api = RealStyleApi.created[-1]
-    assert ("create_new", str(run_dir), True, True) in api.calls
+    assert ("create_new", str(run_dir), True, True, "zip") in api.calls
+
+
+def test_version_upload_zips_directories(monkeypatch, tmp_path):
+    class ExistsApi(RealStyleApi):
+        def dataset_create_new(self, folder, public=False, quiet=True, **kwargs):
+            raise Exception("That dataset already exists (409 Conflict)")
+
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, ExistsApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    ok, url, error = push_output_to_kaggle(str(run_dir))
+
+    assert (ok, error) == (True, None)
+    api = RealStyleApi.created[-1]
+    version_calls = [c for c in api.calls if c[0] == "create_version"]
+    assert version_calls and version_calls[0][3] == "zip"
 
 
 def test_already_exists_falls_back_to_new_version(monkeypatch, tmp_path):

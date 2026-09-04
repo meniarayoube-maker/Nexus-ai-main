@@ -380,7 +380,15 @@ def push_output_to_kaggle(
             "dataset_create_new",
             str(root),
             ("folder", "folder_path", "dir", "path", "dataset_dir"),
-            {"public": not is_private, "is_private": is_private, "private": is_private, "quiet": True},
+            {
+                "public": not is_private,
+                "is_private": is_private,
+                "private": is_private,
+                "quiet": True,
+                # Directories (notably checkpoint-*/) are SKIPPED by the
+                # client's default dir_mode='skip'; 'zip' uploads them.
+                "dir_mode": "zip",
+            },
         )
         logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
         return (True, dataset_url, None)
@@ -396,7 +404,13 @@ def push_output_to_kaggle(
             "dataset_create_version",
             str(root),
             ("folder", "folder_path", "dir", "path", "dataset_dir"),
-            {"version_notes": f"Auto-updated by Unsloth training run: {root.name}", "notes": f"Auto-updated by Unsloth training run: {root.name}", "quiet": True},
+            {
+                "version_notes": f"Auto-updated by Unsloth training run: {root.name}",
+                "notes": f"Auto-updated by Unsloth training run: {root.name}",
+                "quiet": True,
+                # See above: without this, checkpoint subdirectories are skipped.
+                "dir_mode": "zip",
+            },
         )
         logger.info("Kaggle dataset version updated: %s -> %s", root, dataset_url)
         return (True, dataset_url, None)

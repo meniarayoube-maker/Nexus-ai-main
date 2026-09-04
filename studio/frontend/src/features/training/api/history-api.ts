@@ -120,7 +120,11 @@ export async function restoreTrainingRunFromKaggle(
   dataset: string,
   runName?: string | null,
   signal?: AbortSignal,
-  credentials?: { username?: string | null; key?: string | null },
+  credentials?: {
+    username?: string | null;
+    key?: string | null;
+    hfDataset?: string | null;
+  },
 ): Promise<TrainingRunSummary> {
   const response = await authFetch(`/api/train/runs/restore`, {
     method: "POST",
@@ -128,6 +132,7 @@ export async function restoreTrainingRunFromKaggle(
     body: JSON.stringify({
       dataset,
       run_name: runName ?? null,
+      hf_dataset: credentials?.hfDataset?.trim() || null,
       kaggle_username: credentials?.username?.trim() || null,
       kaggle_key: credentials?.key?.trim() || null,
     }),

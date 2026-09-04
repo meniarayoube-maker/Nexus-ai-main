@@ -473,8 +473,14 @@ def _safe_restore_run_name(value: Optional[str], fallback: str) -> str:
     return cleaned or fallback
 
 
-def _restored_run_facts(output_dir: Path) -> "tuple[Optional[int], Optional[str]]":
-    """Best-effort (final_step, base_model) scraped from restored artifacts."""
+def _restored_run_facts(output_dir: Path) -> "tuple[Optional[int], Optional[str], str, bool]":
+    """Best-effort facts scraped from restored artifacts.
+
+    Returns ``(final_step, base_model, training_type, has_adapter)`` where
+    ``training_type`` is inferred from the artifacts (adapter config present
+    means LoRA/QLoRA, otherwise full weights mean Full Finetuning) so a
+    resumed start request validates.
+    """
     step: Optional[int] = None
     checkpoints = sorted(
         (p for p in output_dir.glob("checkpoint-*") if p.is_dir()),
@@ -491,14 +497,17 @@ def _restored_run_facts(output_dir: Path) -> "tuple[Optional[int], Optional[str]
             step = global_step
             break
     model: Optional[str] = None
+    has_adapter = False
     try:
         adapter = json.loads((output_dir / "adapter_config.json").read_text(encoding = "utf-8"))
+        has_adapter = True
         base = adapter.get("base_model_name_or_path") if isinstance(adapter, dict) else None
         if isinstance(base, str) and base.strip():
             model = base.strip()
     except (OSError, ValueError, AttributeError):
         pass
-    return step, model
+    training_type = "LoRA/QLoRA" if has_adapter else "Full Finetuning"
+    return step, model, training_type, has_adapter
 
 
 @router.post("/runs/restore", response_model = TrainingRunSummary)
@@ -578,7 +587,7 @@ async def restore_training_run_from_kaggle(
                 ),
             },
         )
-    final_step, base_model = _restored_run_facts(dest_path)
+    final_step, base_model, training_type, _has_adapter = _restored_run_facts(dest_path)
     now = datetime.now(timezone.utc).isoformat()
     run_id = f"restored_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     # The row's model must stay resolvable: an adapter base id when the
@@ -588,10 +597,18 @@ async def restore_training_run_from_kaggle(
     # fail, and block with a misleading "CRITICAL" verdict.  The local path
     # scans/loads offline from files already on disk.
     model_name = base_model or str(dest_path)
+    # training_type/format_type are REQUIRED by TrainingStartRequest: without
+    # them any resume attempt dies with a bare 422.  The dataset cannot be
+    # recovered from artifacts, so it stays user-supplied (optional here;
+    # resume fails precisely with "No dataset specified" when absent).
+    hf_dataset = (payload.hf_dataset or "").strip() or None
     config = {
         "model_name": model_name,
         "restored_from_kaggle": slug,
         "storage_target": target,
+        "training_type": training_type,
+        "format_type": "alpaca",
+        "hf_dataset": hf_dataset,
     }
     try:
         await asyncio.to_thread(

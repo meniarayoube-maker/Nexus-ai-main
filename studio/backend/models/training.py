@@ -858,6 +858,10 @@ class TrainingRunRestoreRequest(BaseModel):
     run_name: Optional[str] = Field(
         None, description = "Output directory name; defaults to the dataset slug"
     )
+    hf_dataset: Optional[str] = Field(
+        None,
+        description = "Original HF training dataset id (e.g. 'unsloth/alpaca-cleaned'); needed to resume training later",
+    )
     kaggle_username: Optional[str] = Field(
         None, description = "Kaggle username for the download (falls back to env/kaggle.json)"
     )

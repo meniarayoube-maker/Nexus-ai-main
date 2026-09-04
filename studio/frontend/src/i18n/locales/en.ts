@@ -2091,6 +2091,8 @@ export const en = {
       kaggleRestoreDatasetPlaceholder: "owner/dataset-slug",
       kaggleRestoreDatasetDescription:
         "Download a finished run's Kaggle dataset into this machine and register it in history, using the username and key above.",
+      kaggleRestoreHfDatasetPlaceholder:
+        "Original training dataset, e.g. unsloth/alpaca-cleaned (needed to resume)",
       kaggleRestoreButton: "Restore from Kaggle",
       kaggleRestoreBusy: "Restoring...",
       loraSettings: "LoRA Settings",
@@ -2319,6 +2321,9 @@ export const en = {
       restoreDatasetPlaceholder: "owner/dataset-slug",
       restoreRunNameLabel: "Run name (optional)",
       restoreRunNamePlaceholder: "Defaults to the dataset slug",
+      restoreHfDatasetLabel: "Original training dataset (optional)",
+      restoreHfDatasetPlaceholder:
+        "e.g. unsloth/alpaca-cleaned -- needed to resume training later",
       restoreSubmit: "Restore",
       restoreRestoring: "Restoring...",
       restoreSuccess: "Training run restored from Kaggle",

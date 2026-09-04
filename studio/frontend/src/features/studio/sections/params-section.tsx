@@ -119,6 +119,7 @@ export function ParamsSection({
 
   // Restore-from-Kaggle form (local state; credentials come from the store above).
   const [restoreDataset, setRestoreDataset] = useState("");
+  const [restoreHfDataset, setRestoreHfDataset] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState<{
     ok: boolean;
@@ -134,8 +135,10 @@ export function ParamsSection({
       await restoreTrainingRunFromKaggle(dataset, null, undefined, {
         username: store.kaggleUsername,
         key: store.kaggleKey,
+        hfDataset: restoreHfDataset,
       });
       setRestoreDataset("");
+      setRestoreHfDataset("");
       setRestoreMessage({
         ok: true,
         text: translate("studio.history.restoreSuccess"),
@@ -339,6 +342,14 @@ export function ParamsSection({
                     value={restoreDataset}
                     onChange={(event) => setRestoreDataset(event.target.value)}
                     placeholder={t("studio.params.kaggleRestoreDatasetPlaceholder")}
+                    autoComplete="off"
+                    maxLength={160}
+                    disabled={restoreBusy}
+                  />
+                  <Input
+                    value={restoreHfDataset}
+                    onChange={(event) => setRestoreHfDataset(event.target.value)}
+                    placeholder={t("studio.params.kaggleRestoreHfDatasetPlaceholder")}
                     autoComplete="off"
                     maxLength={160}
                     disabled={restoreBusy}

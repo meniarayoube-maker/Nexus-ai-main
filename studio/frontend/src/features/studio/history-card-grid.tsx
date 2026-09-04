@@ -263,6 +263,7 @@ export function HistoryCardGrid({
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoreDataset, setRestoreDataset] = useState("");
   const [restoreRunName, setRestoreRunName] = useState("");
+  const [restoreHfDataset, setRestoreHfDataset] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
@@ -427,6 +428,7 @@ export function HistoryCardGrid({
   const openRestore = () => {
     setRestoreDataset("");
     setRestoreRunName("");
+    setRestoreHfDataset("");
     setRestoreError(null);
     setRestoreOpen(true);
   };
@@ -440,6 +442,8 @@ export function HistoryCardGrid({
       await restoreTrainingRunFromKaggle(
         dataset,
         restoreRunName.trim() || null,
+        undefined,
+        { hfDataset: restoreHfDataset },
       );
       setRestoreOpen(false);
       toast.success(translate("studio.history.restoreSuccess"));
@@ -826,6 +830,17 @@ export function HistoryCardGrid({
                 value={restoreRunName}
                 onChange={(event) => setRestoreRunName(event.target.value)}
                 placeholder={t("studio.history.restoreRunNamePlaceholder")}
+                disabled={restoreBusy}
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">
+                {t("studio.history.restoreHfDatasetLabel")}
+              </span>
+              <Input
+                value={restoreHfDataset}
+                onChange={(event) => setRestoreHfDataset(event.target.value)}
+                placeholder={t("studio.history.restoreHfDatasetPlaceholder")}
                 disabled={restoreBusy}
               />
             </label>

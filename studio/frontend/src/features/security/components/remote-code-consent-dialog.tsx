@@ -193,6 +193,11 @@ export function RemoteCodeConsentDialog() {
   const unsafeFiles = scan?.unsafeFiles ?? [];
   // Malware (an HF-flagged unsafe serialized file) is a hard block with its own copy.
   const malware = unsafeFiles.length > 0;
+  // Blocked with no findings and no severity means the code could NOT be
+  // downloaded and scanned at all (unreachable/private/misspelled repo) --
+  // NOT a CRITICAL finding. Say so precisely instead of crying wolf.
+  const unscannable =
+    blocked && !malware && findings.length === 0 && scan?.maxSeverity == null;
 
   return (
     <AlertDialog
@@ -228,9 +233,11 @@ export function RemoteCodeConsentDialog() {
                 <AlertDialogTitle>
                   {malware
                     ? "Unsafe files detected"
-                    : blocked
-                      ? "Custom code blocked"
-                      : "Enable custom code for this model?"}
+                    : unscannable
+                      ? "Could not verify custom code"
+                      : blocked
+                        ? "Custom code blocked"
+                        : "Enable custom code for this model?"}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {malware ? (
@@ -243,6 +250,19 @@ export function RemoteCodeConsentDialog() {
                       unsafe (for example, a malicious pickle that would run code
                       when the model loads). It cannot be loaded. The flagged
                       files were never downloaded.
+                    </>
+                  ) : unscannable ? (
+                    <>
+                      <span className="font-medium text-foreground">
+                        {displayName}
+                      </span>
+                      <ProviderSuffix provider={provider} />{" "}
+                      declares custom Python code in its repository, but the
+                      code could not be downloaded and scanned (the repository
+                      may be unreachable, private, or the name may not be a
+                      valid model). Loading stays blocked until the code can
+                      be verified -- check the name and your Hugging Face
+                      token, then try again.
                     </>
                   ) : (
                     <>

@@ -581,7 +581,13 @@ async def restore_training_run_from_kaggle(
     final_step, base_model = _restored_run_facts(dest_path)
     now = datetime.now(timezone.utc).isoformat()
     run_id = f"restored_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    model_name = base_model or name
+    # The row's model must stay resolvable: an adapter base id when the
+    # dataset has one, otherwise the LOCAL output dir itself.  A bare slug
+    # (e.g. a full-finetune dataset name) is not a loadable model id -- the
+    # gates (upgrade check, remote-code scan) would probe it as a Hub repo,
+    # fail, and block with a misleading "CRITICAL" verdict.  The local path
+    # scans/loads offline from files already on disk.
+    model_name = base_model or str(dest_path)
     config = {
         "model_name": model_name,
         "restored_from_kaggle": slug,

@@ -453,3 +453,74 @@ def test_upload_refused_when_disk_too_full(monkeypatch, tmp_path):
     assert error is not None and "free disk" in error.lower()
     # Refused before touching the API.
     assert RealStyleApi.created == []
+
+
+def _write_checkpoint_bundle(checkpoint, step, *, valid=True):
+    import pickle
+    import zipfile
+
+    checkpoint.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(checkpoint / "adapter_model.bin", "w") as archive:
+        archive.writestr("archive/data.pkl", pickle.dumps({"weight": "x"}))
+        archive.writestr("archive/data/0", b"0123456789")
+    if valid:
+        for name in ("optimizer.pt", "scheduler.pt"):
+            with zipfile.ZipFile(checkpoint / name, "w") as archive:
+                archive.writestr("archive/data.pkl", pickle.dumps({}))
+        (checkpoint / "trainer_state.json").write_text(
+            json.dumps({"global_step": step}), encoding="utf-8"
+        )
+
+
+def test_staging_uploads_latest_checkpoint_only(monkeypatch, tmp_path):
+    class StagingApi(RealStyleApi):
+        snapshots = []
+
+        def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="zip"):
+            self.calls.append(("create_new", folder, public, quiet, dir_mode))
+            root = Path(folder)
+            StagingApi.snapshots.append(
+                sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+            )
+
+    RealStyleApi.created.clear()
+    StagingApi.snapshots.clear()
+    _install_fake_kaggle(monkeypatch, StagingApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+    _write_checkpoint_bundle(run_dir / "checkpoint-5", 5)
+    _write_checkpoint_bundle(run_dir / "checkpoint-9", 9)
+
+    ok, url, error = push_output_to_kaggle(str(run_dir))
+
+    assert (ok, error) == (True, None)
+    assert url == "https://www.kaggle.com/datasets/testuser/my-run-123"
+    api = RealStyleApi.created[-1]
+    uploaded = Path(api.calls[1][1])
+    # Staged elsewhere (hardlinks), never the live output dir itself.
+    assert uploaded != run_dir
+    assert uploaded.name.startswith(".upload-stage-")
+    snapshot = StagingApi.snapshots[-1]
+    assert "adapter_model.safetensors" in snapshot
+    assert "dataset-metadata.json" in snapshot
+    assert "checkpoint-9/trainer_state.json" in snapshot
+    assert not any(entry.startswith("checkpoint-5/") for entry in snapshot)
+    # Staging is cleaned afterwards (links only; sources untouched).
+    leftovers = [p for p in run_dir.parent.iterdir() if p.name.startswith(".upload-stage-")]
+    assert leftovers == []
+    assert (run_dir / "checkpoint-5" / "trainer_state.json").is_file()
+
+
+def test_flat_output_dir_uploads_root_directly(monkeypatch, tmp_path):
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, RealStyleApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    ok, _url, _error = push_output_to_kaggle(str(run_dir))
+
+    assert ok is True
+    api = RealStyleApi.created[-1]
+    assert api.calls[1][1] == str(run_dir)

@@ -109,6 +109,98 @@ def _slug_from_output_dir(output_dir: Path) -> str:
     return name or "unsloth-output"
 
 
+def _latest_checkpoint_dir(root: Path):
+    """Newest ``checkpoint-*`` subdir, preferring a resume-valid bundle.
+
+    Falls back to the newest dir by name when validity cannot be checked
+    (e.g. missing optional deps) -- the downloader re-validates anyway.
+    """
+    candidates = sorted(
+        (p for p in root.iterdir() if p.is_dir() and p.name.startswith("checkpoint-")),
+        key = lambda p: p.name,
+        reverse = True,
+    )
+    if not candidates:
+        return None
+    try:
+        from core.training.resume import is_resume_checkpoint_valid
+    except Exception:
+        return candidates[0]
+    for candidate in candidates:
+        try:
+            if is_resume_checkpoint_valid(candidate):
+                return candidate
+        except Exception:
+            continue
+    return candidates[0]
+
+
+def _hardlink_tree(src: Path, dst: Path) -> None:
+    """Recreate ``src`` under ``dst`` with hardlinks (near-zero extra bytes).
+
+    Requires the same filesystem (guaranteed: staging is a sibling of root).
+    Raises OSError when linking is impossible -- the caller reports precisely.
+    """
+    if src.is_dir() and not src.is_symlink():
+        dst.mkdir(parents = True, exist_ok = True)
+        for child in sorted(src.iterdir()):
+            _hardlink_tree(child, dst / child.name)
+    else:
+        dst.parent.mkdir(parents = True, exist_ok = True)
+        if dst.exists():
+            dst.unlink()
+        os.link(src, dst)
+
+
+def _build_upload_staging(root: Path):
+    """Stage the upload set without copying bytes.
+
+    Returns ``(upload_dir, cleanup, omitted)`` where ``upload_dir`` is either
+    ``root`` itself (no checkpoint subdirs: behavior identical to before) or a
+    hidden sibling directory hardlinked to: all root files, every non-checkpoint
+    subdir, and the LATEST checkpoint dir only.  Older checkpoint dirs are
+    superseded for resume purposes and would only multiply an already-GB-sized
+    temp archive.  ``cleanup`` removes the staging dir (links only; source
+    data is untouched); ``omitted`` names the skipped checkpoint dirs.
+    """
+    checkpoints = sorted(
+        (p for p in root.iterdir() if p.is_dir() and p.name.startswith("checkpoint-")),
+        key = lambda p: p.name,
+    )
+    if not checkpoints:
+        return root, (lambda: None), []
+    latest = _latest_checkpoint_dir(root) or checkpoints[-1]
+    omitted = [p.name for p in checkpoints if p != latest]
+    import uuid
+
+    staging = root.parent / f".upload-stage-{root.name}-{uuid.uuid4().hex[:8]}"
+    staging.mkdir(parents = True, exist_ok = False)
+    try:
+        for entry in sorted(root.iterdir()):
+            if entry in checkpoints and entry != latest:
+                continue
+            _hardlink_tree(entry, staging / entry.name)
+    except Exception:
+        import shutil as _shutil
+
+        _shutil.rmtree(staging, ignore_errors = True)
+        raise
+    if omitted:
+        logger.info(
+            "Kaggle upload staging %s: keeping newest %s, omitting superseded %s",
+            staging,
+            latest.name,
+            omitted,
+        )
+
+    def _cleanup() -> None:
+        import shutil as _shutil
+
+        _shutil.rmtree(staging, ignore_errors = True)
+
+    return staging, _cleanup, omitted
+
+
 def _write_metadata(
     dataset_dir: Path,
     slug: str,
@@ -411,89 +503,110 @@ def push_output_to_kaggle(
                 "minutes -- keep the session alive until 'upload complete' appears.",
                 _format_bytes(_payload_bytes),
             )
-        try:
-            _free_bytes = shutil.disk_usage(root).free
-        except OSError as exc:
-            _free_bytes = None
-            logger.warning("Could not check free disk for %s: %s", root, exc)
-        if _free_bytes is not None and _free_bytes < _payload_bytes * UPLOAD_DISK_MULTIPLE:
-            reason = (
-                f"Not enough free disk for the Kaggle upload: payload "
-                f"{_format_bytes(_payload_bytes)} needs ~{_format_bytes(_payload_bytes * UPLOAD_DISK_MULTIPLE)} "
-                f"free, only {_format_bytes(_free_bytes)} available at {root}."
-            )
-            logger.warning("Kaggle push refused: %s", reason)
-            return (False, None, reason)
     except OSError as exc:
         logger.warning("Could not list upload source %s: %s", root, exc)
 
-    # --- 1-3. Import, resolve credentials, authenticate ---
-    api, owner, auth_error = _authenticate_kaggle(username, key)
-    if auth_error is not None or api is None:
-        return (False, None, auth_error or "Kaggle authentication failed.")
-    if not owner:
-        # An ownerless metadata id ("slug" without "owner/") crashes the
-        # client version call with a bare IndexError; fail fast instead.
-        reason = (
-            "Kaggle username could not be determined, so the dataset owner "
-            "is unknown. Enter the Kaggle username in the training settings "
-            "and retry (the API key is still needed for the upload itself)."
-        )
+    # Stage the upload set: all root files + every non-checkpoint subdir + the
+    # LATEST checkpoint dir only, hardlinked (near-zero extra bytes).  Older
+    # checkpoint dirs are superseded for resume and would only multiply the
+    # temp archive on tight disks.  Without checkpoint subdirs this is root
+    # itself (behavior identical to before).
+    try:
+        upload_dir, _cleanup_staging, _omitted = _build_upload_staging(root)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"Could not stage the Kaggle upload set for {root}: {exc}"
         logger.warning("Kaggle push refused: %s", reason)
         return (False, None, reason)
-
-    # --- 4. Build dataset slug & metadata ---
-    resolved_slug = (str(slug).strip() if slug else None) or _slug_from_output_dir(root)
-    description = description or f"Unsloth training output: {root.name}"
-    _write_metadata(root, resolved_slug, is_private, description, owner=owner)
-    dataset_url = f"https://www.kaggle.com/datasets/{owner}/{resolved_slug}"
-
-    # --- 5. Create or update the dataset ---
-    # The real kaggle-api client takes only a folder (+ options); title, slug
-    # and visibility come from dataset-metadata.json written above.  When the
-    # dataset already exists the API raises; we catch that and fall back to
-    # ``dataset_create_version`` so re-runs don't break.
     try:
-        _call_kaggle_api(
-            api,
-            "dataset_create_new",
-            str(root),
-            ("folder", "folder_path", "dir", "path", "dataset_dir"),
-            {
-                "public": not is_private,
-                "is_private": is_private,
-                "private": is_private,
-                "quiet": True,
-                # Directories (notably checkpoint-*/) are SKIPPED by the
-                # client's default dir_mode='skip'; 'zip' uploads them.
-                "dir_mode": "zip",
-            },
-        )
-        logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
-        return (True, dataset_url, None)
-    except Exception as create_exc:  # noqa: BLE001
-        create_text = str(create_exc).lower()
-        if "already exists" not in create_text and "409" not in create_text:
-            return (False, None, _describe_error(create_exc))
+        _staged_bytes = upload_source_bytes(upload_dir)
+        try:
+            _free_bytes = shutil.disk_usage(upload_dir).free
+        except OSError as exc:
+            _free_bytes = None
+            logger.warning("Could not check free disk for %s: %s", upload_dir, exc)
+        if _free_bytes is not None and _free_bytes < _staged_bytes * UPLOAD_DISK_MULTIPLE:
+            reason = (
+                f"Not enough free disk for the Kaggle upload: payload "
+                f"{_format_bytes(_staged_bytes)} needs ~{_format_bytes(_staged_bytes * UPLOAD_DISK_MULTIPLE)} "
+                f"free, only {_format_bytes(_free_bytes)} available at {upload_dir}."
+            )
+            logger.warning("Kaggle push refused: %s", reason)
+            return (False, None, reason)
 
-    # Dataset already exists: push a new version.
-    try:
-        _call_kaggle_api(
-            api,
-            "dataset_create_version",
-            str(root),
-            ("folder", "folder_path", "dir", "path", "dataset_dir"),
-            {
-                "version_notes": f"Auto-updated by Unsloth training run: {root.name}",
-                "notes": f"Auto-updated by Unsloth training run: {root.name}",
-                "quiet": True,
-                # See above: without this, checkpoint subdirectories are skipped.
-                "dir_mode": "zip",
-            },
-        )
-        logger.info("Kaggle dataset version updated: %s -> %s", root, dataset_url)
-        return (True, dataset_url, None)
-    except Exception as exc:  # noqa: BLE001
-        reason = _describe_error(exc)
-        logger.warning("Kaggle push failed for %s -> %s: %s", root, resolved_slug, reason)
-        return (False, None, reason)
+        # --- 1-3. Import, resolve credentials, authenticate ---
+        api, owner, auth_error = _authenticate_kaggle(username, key)
+        if auth_error is not None or api is None:
+            return (False, None, auth_error or "Kaggle authentication failed.")
+        if not owner:
+            # An ownerless metadata id ("slug" without "owner/") crashes the
+            # client version call with a bare IndexError; fail fast instead.
+            reason = (
+                "Kaggle username could not be determined, so the dataset owner "
+                "is unknown. Enter the Kaggle username in the training settings "
+                "and retry (the API key is still needed for the upload itself)."
+            )
+            logger.warning("Kaggle push refused: %s", reason)
+            return (False, None, reason)
+
+        # --- 4. Build dataset slug & metadata ---
+        resolved_slug = (str(slug).strip() if slug else None) or _slug_from_output_dir(root)
+        description = description or f"Unsloth training output: {root.name}"
+        _write_metadata(root, resolved_slug, is_private, description, owner=owner)
+        if upload_dir != root:
+            _write_metadata(upload_dir, resolved_slug, is_private, description, owner=owner)
+        dataset_url = f"https://www.kaggle.com/datasets/{owner}/{resolved_slug}"
+
+        # --- 5. Create or update the dataset ---
+        # The real kaggle-api client takes only a folder (+ options); title, slug
+        # and visibility come from dataset-metadata.json written above.  When the
+        # dataset already exists the API raises; we catch that and fall back to
+        # ``dataset_create_version`` so re-runs don't break.
+        try:
+            _call_kaggle_api(
+                api,
+                "dataset_create_new",
+                str(upload_dir),
+                ("folder", "folder_path", "dir", "path", "dataset_dir"),
+                {
+                    "public": not is_private,
+                    "is_private": is_private,
+                    "private": is_private,
+                    "quiet": True,
+                    # Directories (notably checkpoint-*/) are SKIPPED by the
+                    # client's default dir_mode='skip'; 'zip' uploads them.
+                    "dir_mode": "zip",
+                },
+            )
+            logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
+            return (True, dataset_url, None)
+        except Exception as create_exc:  # noqa: BLE001
+            create_text = str(create_exc).lower()
+            if "already exists" not in create_text and "409" not in create_text:
+                return (False, None, _describe_error(create_exc))
+
+        # Dataset already exists: push a new version.
+        try:
+            _call_kaggle_api(
+                api,
+                "dataset_create_version",
+                str(upload_dir),
+                ("folder", "folder_path", "dir", "path", "dataset_dir"),
+                {
+                    "version_notes": f"Auto-updated by Unsloth training run: {root.name}",
+                    "notes": f"Auto-updated by Unsloth training run: {root.name}",
+                    "quiet": True,
+                    # See above: without this, checkpoint subdirectories are skipped.
+                    "dir_mode": "zip",
+                },
+            )
+            logger.info("Kaggle dataset version updated: %s -> %s", root, dataset_url)
+            return (True, dataset_url, None)
+        except Exception as exc:  # noqa: BLE001
+            reason = _describe_error(exc)
+            logger.warning("Kaggle push failed for %s -> %s: %s", root, resolved_slug, reason)
+            return (False, None, reason)
+    finally:
+        try:
+            _cleanup_staging()
+        except Exception:
+            pass

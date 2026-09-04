@@ -738,6 +738,10 @@ class UnslothTrainer:
             from core.training.resume import ensure_stop_checkpoint_bundle
 
             failure = ensure_stop_checkpoint_bundle(self.trainer, output_dir)
+            try:
+                _stop_ckpt_step = int(getattr(getattr(self.trainer, "state", None), "global_step", 0) or 0)
+            except (TypeError, ValueError):
+                _stop_ckpt_step = 0
             if failure is not None:
                 self.stop_save_failed = True
                 raise RuntimeError(
@@ -745,6 +749,10 @@ class UnslothTrainer:
                     "Model files were saved, but this run cannot be resumed. "
                     f"({failure})"
                 )
+            logger.info(
+                "Stop-and-save checkpoint verified resumable at %s",
+                os.path.join(str(output_dir), f"checkpoint-{_stop_ckpt_step}"),
+            )
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(

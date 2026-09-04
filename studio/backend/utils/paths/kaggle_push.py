@@ -341,6 +341,21 @@ def push_output_to_kaggle(
         logger.warning("Kaggle push skipped: output_dir not a directory: %s", root)
         return (False, None, None)
 
+    # Self-proving upload manifest: log exactly what exists locally so a later
+    # "checkpoint missing from the dataset" can be told apart between "never
+    # written" and "dropped by the upload".
+    try:
+        _top_entries = sorted(p.name for p in root.iterdir())
+        _ckpt_dirs = [name for name in _top_entries if (root / name).is_dir() and name.startswith("checkpoint-")]
+        logger.info(
+            "Kaggle upload source %s: %d top-level entries, checkpoint dirs=%s",
+            root,
+            len(_top_entries),
+            _ckpt_dirs or "none",
+        )
+    except OSError as exc:
+        logger.warning("Could not list upload source %s: %s", root, exc)
+
     # --- 1-3. Import, resolve credentials, authenticate ---
     api, owner, auth_error = _authenticate_kaggle(username, key)
     if auth_error is not None or api is None:

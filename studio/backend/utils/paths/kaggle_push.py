@@ -71,12 +71,26 @@ def _slug_from_output_dir(output_dir: Path) -> str:
     return name or "unsloth-output"
 
 
-def _write_metadata(dataset_dir: Path, slug: str, is_private: bool, description: str) -> None:
-    """Write ``dataset-metadata.json`` into the upload folder so Kaggle knows
-    the slug and visibility *before* ``create_new`` or ``create_version``."""
+def _write_metadata(
+    dataset_dir: Path,
+    slug: str,
+    is_private: bool,
+    description: str,
+    *,
+    owner: Optional[str] = None,
+) -> None:
+    """Write ``dataset-metadata.json`` into the upload folder.
+
+    The real ``kaggle-api`` client reads the title/slug/visibility from this
+    file (``dataset_create_new``/``dataset_create_version`` take only a folder
+    argument) and requires the ``id`` (``owner/slug``) and ``licenses`` fields,
+    so both are included whenever the owner is known.
+    """
+    title = slug.replace("-", " ").replace("_", " ").title()
     metadata = {
-        "title": slug.replace("-", " ").replace("_", " ").title(),
-        "slug": slug,
+        "title": title,
+        "id": f"{owner}/{slug}" if owner else slug,
+        "licenses": [{"name": "cc-by-sa-4.0"}],
         "description": description,
         "isPrivate": is_private,
     }
@@ -85,6 +99,41 @@ def _write_metadata(dataset_dir: Path, slug: str, is_private: bool, description:
         target.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not write dataset-metadata.json for %s: %s", dataset_dir, exc)
+
+
+def _call_kaggle_api(api, method_name: str, folder: str, extra: dict) -> None:
+    """Call ``dataset_create_new``/``dataset_create_version`` across versions.
+
+    Real ``kaggle-api`` releases take the upload folder under different
+    parameter names (``folder`` in current releases; older/alternate builds
+    used ``folder_path``-style names) and accept different option sets, so the
+    supported parameters are probed with ``inspect`` and only those are
+    passed.  When the signature cannot be inspected, the documented
+    ``folder``-first convention is used positionally.
+    """
+    import inspect
+
+    method = getattr(api, method_name)
+    candidates: dict[str, object] = dict(extra)
+    for folder_key in ("folder", "folder_path", "dir", "path", "dataset_dir"):
+        candidates.setdefault(folder_key, folder)
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if params:
+        names = set(params.keys())
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        kwargs = {k: v for k, v in candidates.items() if has_var_kw or k in names}
+        folder_keys = [k for k in ("folder", "folder_path", "dir", "path", "dataset_dir") if k in kwargs]
+        if not folder_keys:
+            # No recognized folder parameter: pass the folder positionally.
+            return method(folder, **kwargs)
+        # Drop alias folder keys so only the accepted one is sent.
+        keep = folder_keys[0]
+        kwargs = {k: v for k, v in kwargs.items() if k not in ("folder", "folder_path", "dir", "path", "dataset_dir") or k == keep}
+        return method(**kwargs)
+    return method(folder, **{k: v for k, v in extra.items()})
 
 
 def _describe_error(exc: Exception) -> str:
@@ -171,6 +220,10 @@ def push_output_to_kaggle(
     resolved_user, resolved_key = _resolve_kaggle_credentials(username, key)
 
     # --- 3. Authenticate ---
+    # The dataset URL needs the owner (username).  Prefer the explicit/env
+    # credentials, then the platform-injected KAGGLE_USERNAME, then the
+    # client's own username attribute when it exposes one.
+    owner: Optional[str] = None
     try:
         api = KaggleApi()
         # KaggleApi.authenticate() reads KAGGLE_USERNAME/KAGGLE_KEY env vars
@@ -185,6 +238,9 @@ def push_output_to_kaggle(
             os.environ["KAGGLE_KEY"] = resolved_key
         try:
             api.authenticate()
+            owner = resolved_user or os.environ.get("KAGGLE_USERNAME") or getattr(api, "username", None) or None
+            if owner is not None:
+                owner = str(owner).strip() or None
         finally:
             # Restore env to original state (never leave stale creds in the process).
             for env_key, original in env_backup.items():
@@ -200,20 +256,23 @@ def push_output_to_kaggle(
     # --- 4. Build dataset slug & metadata ---
     resolved_slug = (str(slug).strip() if slug else None) or _slug_from_output_dir(root)
     description = description or f"Unsloth training output: {root.name}"
-    _write_metadata(root, resolved_slug, is_private, description)
+    _write_metadata(root, resolved_slug, is_private, description, owner=owner)
+    dataset_url = (
+        f"https://www.kaggle.com/datasets/{owner}/{resolved_slug}" if owner else None
+    )
 
     # --- 5. Create or update the dataset ---
-    # ``dataset_create_new`` is the stable programmatic entry point.  When the
-    # dataset already exists on Kaggle the API raises an error; we catch that
-    # and fall back to ``dataset_create_version`` so re-runs don't break.
+    # The real kaggle-api client takes only a folder (+ options); title, slug
+    # and visibility come from dataset-metadata.json written above.  When the
+    # dataset already exists the API raises; we catch that and fall back to
+    # ``dataset_create_version`` so re-runs don't break.
     try:
-        api.dataset_create_new(
-            folder_path=str(root),
-            title=resolved_slug.replace("-", " ").replace("_", " ").title(),
-            slug=resolved_slug,
-            is_private=is_private,
+        _call_kaggle_api(
+            api,
+            "dataset_create_new",
+            str(root),
+            {"public": not is_private, "is_private": is_private, "private": is_private, "quiet": True},
         )
-        dataset_url = f"https://www.kaggle.com/datasets/{api.username}/{resolved_slug}"
         logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
         return (True, dataset_url, None)
     except Exception as create_exc:  # noqa: BLE001
@@ -223,12 +282,12 @@ def push_output_to_kaggle(
 
     # Dataset already exists: push a new version.
     try:
-        api.dataset_create_version(
-            folder_path=str(root),
-            version_notes=f"Auto-updated by Unsloth training run: {root.name}",
-            force=True,
+        _call_kaggle_api(
+            api,
+            "dataset_create_version",
+            str(root),
+            {"version_notes": f"Auto-updated by Unsloth training run: {root.name}", "notes": f"Auto-updated by Unsloth training run: {root.name}", "quiet": True},
         )
-        dataset_url = f"https://www.kaggle.com/datasets/{api.username}/{resolved_slug}"
         logger.info("Kaggle dataset version updated: %s -> %s", root, dataset_url)
         return (True, dataset_url, None)
     except Exception as exc:  # noqa: BLE001

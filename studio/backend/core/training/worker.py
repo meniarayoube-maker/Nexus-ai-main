@@ -18,6 +18,7 @@ import math
 import os
 import shutil
 import sys
+import threading
 import time
 import traceback
 import gc
@@ -3620,16 +3621,62 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if target == "huggingface":
             label = "Hugging Face"
             url_key = "repo_url"
-            _send("status", status_message = f"Uploading to {label}...")
-            res = _maybe_push_hf_output(output_dir_local, cfg)
         elif target == "kaggle":
             label = "Kaggle Dataset"
             url_key = "dataset_url"
-            _send("status", status_message = f"Uploading to {label}...")
-            res = _maybe_push_kaggle_output(output_dir_local, cfg)
         else:
             # local / google_drive: path-only, no upload step.
             return
+        # Heartbeat while the blocking upload runs (same watchdog-grace
+        # reason as the CUDA path): UI-visible elapsed/size plus a machine
+        # upload_progress event for the parent's exemption.
+        def _put(event):
+            etype = event.get("type")
+            kwargs = {k: v for k, v in event.items() if k not in ("type", "ts")}
+            _send(etype, **kwargs)
+
+        _beat_stop = None
+        try:
+            from core.training.upload_progress import (
+                format_bytes,
+                upload_heartbeat_loop,
+            )
+            from utils.paths.kaggle_push import upload_source_bytes
+
+            try:
+                _size_str = (
+                    format_bytes(upload_source_bytes(output_dir_local))
+                    if output_dir_local
+                    else "unknown size"
+                )
+            except Exception:
+                _size_str = "unknown size"
+            _send("status", status_message = f"Uploading to {label}... ({_size_str})")
+            _beat_stop = threading.Event()
+            _beat_thread = threading.Thread(
+                target = upload_heartbeat_loop,
+                kwargs = {
+                    "put": _put,
+                    "label": label,
+                    "size_str": _size_str,
+                    "stop": _beat_stop,
+                },
+                daemon = True,
+            )
+            _beat_thread.start()
+        except Exception:
+            _beat_stop = None
+        try:
+            if target == "huggingface":
+                res = _maybe_push_hf_output(output_dir_local, cfg)
+            else:
+                res = _maybe_push_kaggle_output(output_dir_local, cfg)
+        finally:
+            try:
+                if _beat_stop is not None:
+                    _beat_stop.set()
+            except Exception:
+                pass
         if not res:
             return
         url = res.get(url_key)
@@ -3638,8 +3685,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("upload_status", ok = True, repo_url = url, error = None)
             _send("status", status_message = f"{label} upload complete: {url}")
         elif error:
+            # Precise reasons already name Kaggle ("Kaggle authentication
+            # failed..."); don't stack a redundant prefix on them.
+            message = error if error.strip().lower().startswith("kaggle") else f"{label} upload failed: {error}"
             _send("upload_status", ok = False, repo_url = None, error = error)
-            _send("warning", message = f"{label} upload failed: {error}")
+            _send("warning", message = message)
 
     def _stop_checkpoint_ok() -> bool:
         if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
@@ -5090,10 +5140,40 @@ def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", 
         label, url_key = "Kaggle Dataset", "dataset_url"
     else:
         return
+    # Heartbeat while the blocking upload runs: the UI shows elapsed/size
+    # instead of silence, and the parent exempts a beating worker from
+    # watchdog kills. Stopped in the finally below; daemon + bounded anyway.
+    _beat_stop = None
     try:
-        event_queue.put({"type": "status", "message": f"Uploading to {label}...", "ts": time.time()})
+        from core.training.upload_progress import (
+            format_bytes,
+            upload_heartbeat_loop,
+        )
+        from utils.paths.kaggle_push import upload_source_bytes
+
+        try:
+            _size_str = (
+                format_bytes(upload_source_bytes(output_dir_local))
+                if output_dir_local
+                else "unknown size"
+            )
+        except Exception:
+            _size_str = "unknown size"
+        event_queue.put({"type": "status", "message": f"Uploading to {label}... ({_size_str})", "ts": time.time()})
+        _beat_stop = threading.Event()
+        _beat_thread = threading.Thread(
+            target = upload_heartbeat_loop,
+            kwargs = {
+                "put": event_queue.put,
+                "label": label,
+                "size_str": _size_str,
+                "stop": _beat_stop,
+            },
+            daemon = True,
+        )
+        _beat_thread.start()
     except Exception:
-        pass
+        _beat_stop = None
     try:
         if target == "huggingface":
             res = _maybe_push_hf_output(output_dir_local, cfg)
@@ -5101,6 +5181,12 @@ def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", 
             res = _maybe_push_kaggle_output(output_dir_local, cfg)
     except Exception as exc:
         res = {"ok": False, "error": f"upload crashed: {exc}"}
+    finally:
+        try:
+            if _beat_stop is not None:
+                _beat_stop.set()
+        except Exception:
+            pass
     if not res:
         return
     url = res.get(url_key)
@@ -5110,8 +5196,9 @@ def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", 
             event_queue.put({"type": "upload_status", "ok": True, "repo_url": url, "error": None, "ts": time.time()})
             event_queue.put({"type": "status", "message": f"{label} upload complete: {url}", "ts": time.time()})
         elif error:
+            message = error if error.strip().lower().startswith("kaggle") else f"{label} upload failed: {error}"
             event_queue.put({"type": "upload_status", "ok": False, "repo_url": None, "error": error, "ts": time.time()})
-            event_queue.put({"type": "warning", "message": f"{label} upload failed: {error}", "ts": time.time()})
+            event_queue.put({"type": "warning", "message": message, "ts": time.time()})
     except Exception:
         pass
 

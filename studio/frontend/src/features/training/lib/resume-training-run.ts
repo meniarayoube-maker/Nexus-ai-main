@@ -13,6 +13,7 @@ import {
   isTrainingStartOutcomeUnknownError,
   startTraining,
 } from "../api/train-api";
+import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import { resolveResumeRemoteCodeCache } from "./resume-remote-code-cache";
@@ -241,6 +242,16 @@ async function loadResumePayload(
   payload.hf_token = attempt.hfToken || null;
   payload.wandb_token = null;
   payload.resume_from_checkpoint = outputDir;
+  // Secrets never persist in restored rows (sanitized out of run-config.json),
+  // so re-attach whatever the user currently has in the Kaggle settings block:
+  // without a key the resumed run's own upload would fail at the end.
+  const kaggleCfg = useTrainingConfigStore.getState();
+  if (kaggleCfg.kaggleUsername?.trim()) {
+    payload.kaggle_username = kaggleCfg.kaggleUsername.trim();
+  }
+  if (kaggleCfg.kaggleKey?.trim()) {
+    payload.kaggle_key = kaggleCfg.kaggleKey.trim();
+  }
   return payload;
 }
 

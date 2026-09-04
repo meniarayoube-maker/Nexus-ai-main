@@ -1117,6 +1117,12 @@ class TrainingBackend:
         self._stop_watchdog: Optional[threading.Thread] = None
         self._stop_watchdog_proc: Optional[mp.Process] = None
         self._complete_seen = threading.Event()
+        # Upload heartbeat markers (monotonic timestamps): while a storage
+        # upload is actively beating, the watchdog must not kill the worker.
+        # Reset on every new run start and on terminal events (upload runs
+        # strictly before complete, so a terminal event ends any exemption).
+        self._upload_started_at: Optional[float] = None
+        self._upload_last_beat: Optional[float] = None
 
         # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
@@ -1805,6 +1811,9 @@ class TrainingBackend:
             self._cancel_requested = False
             self._cancel_cleanup_output_dir = None
             self._complete_seen.clear()
+            from core.training.upload_progress import reset_upload_beats
+
+            reset_upload_beats(self)
             self._progress = TrainingProgress(
                 is_training = True, status_message = "Initializing training..."
             )
@@ -2062,6 +2071,8 @@ class TrainingBackend:
         started = time.monotonic()
         complete_at: Optional[float] = started if terminal_seen else None
         reason = ""
+        from core.training.upload_progress import upload_exempts_kill
+
         while True:
             with self._lock:
                 superseded = self._proc is not target_proc
@@ -2070,6 +2081,14 @@ class TrainingBackend:
             if superseded or not target_proc.is_alive():
                 return
             now = time.monotonic()
+            with self._lock:
+                _up_started = self._upload_started_at
+                _up_beat = self._upload_last_beat
+            if upload_exempts_kill(_up_started, _up_beat, now):
+                # A storage upload is actively beating: killing now would
+                # corrupt it. The exemption self-expires (freshness + cap).
+                time.sleep(0.5)
+                continue
             abs_timeout = _CANCEL_TIMEOUT_S if cancelling else _STOP_TIMEOUT_S
             grace = _STOP_GRACE_S if grace_s is None else grace_s
             if complete_at is None and self._complete_seen.is_set():
@@ -3003,6 +3022,14 @@ class TrainingBackend:
                         self._progress.warnings.append(message)
                         logger.warning("Training warning: %s", message)
 
+            elif etype == "upload_progress":
+                # Heartbeat from an in-flight storage upload (see
+                # core.training.upload_progress): exempts the worker from
+                # watchdog kills while beats stay fresh. No DB action.
+                from core.training.upload_progress import note_upload_beat
+
+                note_upload_beat(self)
+
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")
                 stopped = self._should_stop or msg.strip().lower() in {
@@ -3021,6 +3048,10 @@ class TrainingBackend:
                     self._output_dir = event_output_dir
                 self._progress.output_dir = self._output_dir
                 self._progress.status_message = msg
+                # Uploads run strictly before complete, so any exemption ends here.
+                from core.training.upload_progress import reset_upload_beats
+
+                reset_upload_beats(self)
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_and_finalize"
                 else:
@@ -3036,6 +3067,9 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                from core.training.upload_progress import reset_upload_beats
+
+                reset_upload_beats(self)
                 # Nothing left to save: drop an in-flight watchdog to its grace, not the
                 # save backstop.
                 self._complete_seen.set()

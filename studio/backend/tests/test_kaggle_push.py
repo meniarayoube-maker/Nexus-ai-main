@@ -22,6 +22,7 @@ from utils.paths.kaggle_push import (
     _validate_dataset_slug,
     download_output_from_kaggle,
     push_output_to_kaggle,
+    upload_source_bytes,
 )
 
 
@@ -212,7 +213,7 @@ def test_owner_falls_back_to_client_username_attribute(monkeypatch, tmp_path):
     assert metadata["id"] == "attruser/my-run-123"
 
 
-def test_no_owner_anywhere_still_reports_success_without_url(monkeypatch, tmp_path):
+def test_no_owner_anywhere_fails_fast_with_precise_reason(monkeypatch, tmp_path):
     RealStyleApi.created.clear()
     _install_fake_kaggle(monkeypatch, RealStyleApi)
     monkeypatch.delenv("KAGGLE_USERNAME", raising=False)
@@ -221,7 +222,30 @@ def test_no_owner_anywhere_still_reports_success_without_url(monkeypatch, tmp_pa
 
     ok, url, error = push_output_to_kaggle(str(run_dir))
 
-    assert (ok, url, error) == (True, None, None)
+    assert ok is False
+    assert url is None
+    assert error is not None and "username" in error.lower()
+    # Refused before touching the API (no ownerless metadata id).
+    api = RealStyleApi.created[-1]
+    assert all(call[0] == "authenticate" for call in api.calls)
+
+
+def test_username_without_key_keeps_owner(monkeypatch, tmp_path):
+    # Regression: a known username must survive even when the key comes from
+    # elsewhere (restored rows sanitize the key away). The old code nulled
+    # both halves, producing an ownerless id that crashed the client.
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, RealStyleApi)
+    monkeypatch.delenv("KAGGLE_USERNAME", raising=False)
+    monkeypatch.delenv("KAGGLE_KEY", raising=False)
+    run_dir = _make_run_dir(tmp_path)
+
+    ok, url, error = push_output_to_kaggle(str(run_dir), username="loneuser")
+
+    assert (ok, error) == (True, None)
+    assert url == "https://www.kaggle.com/datasets/loneuser/my-run-123"
+    metadata = json.loads((run_dir / "dataset-metadata.json").read_text(encoding="utf-8"))
+    assert metadata["id"] == "loneuser/my-run-123"
 
 
 # ---------------------------------------------------------------------------
@@ -394,3 +418,38 @@ def test_download_without_any_method_is_precise(monkeypatch, tmp_path):
     assert ok is False
     assert path is None
     assert error is not None and "no" in error.lower() and "download" in error.lower()
+
+
+def test_upload_source_bytes_counts_recursively(tmp_path):
+    run_dir = _make_run_dir(tmp_path)
+    ckpt = run_dir / "checkpoint-5"
+    ckpt.mkdir()
+    (ckpt / "optimizer.pt").write_bytes(b"0" * 100)
+    # 12-byte adapter file + 100-byte optimizer file.
+    assert upload_source_bytes(run_dir) == 112
+    assert upload_source_bytes(tmp_path / "missing") == 0
+
+
+def test_upload_refused_when_disk_too_full(monkeypatch, tmp_path):
+    import shutil as _shutil
+
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, RealStyleApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    class _Usage:
+        total = 10**12
+        used = 10**12 - 1
+        free = 1
+
+    monkeypatch.setattr(_shutil, "disk_usage", lambda _path: _Usage())
+
+    ok, url, error = push_output_to_kaggle(str(run_dir))
+
+    assert ok is False
+    assert url is None
+    assert error is not None and "free disk" in error.lower()
+    # Refused before touching the API.
+    assert RealStyleApi.created == []

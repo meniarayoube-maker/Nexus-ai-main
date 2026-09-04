@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -43,6 +44,42 @@ logger = get_logger(__name__)
 PushResult = Tuple[bool, Optional[str], Optional[str]]
 """``(ok, dataset_url, error)``."""
 
+# Upload preflight: the client zips directories before sending, so the disk
+# must hold roughly this multiple of the payload (archive + margin).
+UPLOAD_DISK_MULTIPLE = 2.0
+# Payloads at/above this size get a prominent "large upload" log line so a
+# long silence is expected, not alarming.
+LARGE_UPLOAD_BYTES = 2 * 1024**3
+
+
+def upload_source_bytes(root: Path) -> int:
+    """Total bytes under ``root`` (the upload payload size). Never raises."""
+    total = 0
+    try:
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for name in filenames:
+                try:
+                    total += (Path(dirpath) / name).stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return total
+
+
+def _format_bytes(num_bytes: float) -> str:
+    try:
+        size = float(num_bytes)
+    except (TypeError, ValueError):
+        return "unknown size"
+    if size < 0:
+        return "unknown size"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024.0 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -52,16 +89,17 @@ def _resolve_kaggle_credentials(
     username: Optional[str],
     key: Optional[str],
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve Kaggle credentials: explicit args > env vars > kaggle.json."""
+    """Resolve Kaggle credentials: explicit args > env vars, each half independently.
+
+    A known username is kept even when the key must come from elsewhere
+    (``kaggle.json``): it is still needed as the dataset owner, and dropping
+    it produces an ownerless metadata id that crashes the client with a bare
+    ``IndexError``.  Authentication itself still fails precisely later if no
+    key exists anywhere.
+    """
     user = (str(username).strip() if username else None) or os.environ.get("KAGGLE_USERNAME") or None
     kkey = (str(key).strip() if key else None) or os.environ.get("KAGGLE_KEY") or None
-    # If env vars provided only one half, we need both; fall back to kaggle.json.
-    if (user and not kkey) or (kkey and not user):
-        user, kkey = None, None
-    if user and kkey:
-        return user, kkey
-    # kaggle.json fallback: KaggleApi.authenticate() handles this natively.
-    return None, None
+    return user, kkey
 
 
 def _slug_from_output_dir(output_dir: Path) -> str:
@@ -359,12 +397,33 @@ def push_output_to_kaggle(
     try:
         _top_entries = sorted(p.name for p in root.iterdir())
         _ckpt_dirs = [name for name in _top_entries if (root / name).is_dir() and name.startswith("checkpoint-")]
+        _payload_bytes = upload_source_bytes(root)
         logger.info(
-            "Kaggle upload source %s: %d top-level entries, checkpoint dirs=%s",
+            "Kaggle upload source %s: %d top-level entries (%s), checkpoint dirs=%s",
             root,
             len(_top_entries),
+            _format_bytes(_payload_bytes),
             _ckpt_dirs or "none",
         )
+        if _payload_bytes >= LARGE_UPLOAD_BYTES:
+            logger.info(
+                "Large Kaggle upload (%s): zipping + sending can take tens of "
+                "minutes -- keep the session alive until 'upload complete' appears.",
+                _format_bytes(_payload_bytes),
+            )
+        try:
+            _free_bytes = shutil.disk_usage(root).free
+        except OSError as exc:
+            _free_bytes = None
+            logger.warning("Could not check free disk for %s: %s", root, exc)
+        if _free_bytes is not None and _free_bytes < _payload_bytes * UPLOAD_DISK_MULTIPLE:
+            reason = (
+                f"Not enough free disk for the Kaggle upload: payload "
+                f"{_format_bytes(_payload_bytes)} needs ~{_format_bytes(_payload_bytes * UPLOAD_DISK_MULTIPLE)} "
+                f"free, only {_format_bytes(_free_bytes)} available at {root}."
+            )
+            logger.warning("Kaggle push refused: %s", reason)
+            return (False, None, reason)
     except OSError as exc:
         logger.warning("Could not list upload source %s: %s", root, exc)
 
@@ -372,14 +431,22 @@ def push_output_to_kaggle(
     api, owner, auth_error = _authenticate_kaggle(username, key)
     if auth_error is not None or api is None:
         return (False, None, auth_error or "Kaggle authentication failed.")
+    if not owner:
+        # An ownerless metadata id ("slug" without "owner/") crashes the
+        # client version call with a bare IndexError; fail fast instead.
+        reason = (
+            "Kaggle username could not be determined, so the dataset owner "
+            "is unknown. Enter the Kaggle username in the training settings "
+            "and retry (the API key is still needed for the upload itself)."
+        )
+        logger.warning("Kaggle push refused: %s", reason)
+        return (False, None, reason)
 
     # --- 4. Build dataset slug & metadata ---
     resolved_slug = (str(slug).strip() if slug else None) or _slug_from_output_dir(root)
     description = description or f"Unsloth training output: {root.name}"
     _write_metadata(root, resolved_slug, is_private, description, owner=owner)
-    dataset_url = (
-        f"https://www.kaggle.com/datasets/{owner}/{resolved_slug}" if owner else None
-    )
+    dataset_url = f"https://www.kaggle.com/datasets/{owner}/{resolved_slug}"
 
     # --- 5. Create or update the dataset ---
     # The real kaggle-api client takes only a folder (+ options); title, slug

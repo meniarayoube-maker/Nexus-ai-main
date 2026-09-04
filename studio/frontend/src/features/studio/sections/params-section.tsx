@@ -19,10 +19,13 @@ import {
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
 import {
+  HistoryRequestError,
+  emitTrainingRunsChanged,
+  restoreTrainingRunFromKaggle,
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
-import { useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useRef, useState } from "react";
@@ -113,6 +116,44 @@ export function ParamsSection({
     store.embeddingLearningRate
       ? embeddingLearningRateDraft.value
       : String(store.embeddingLearningRate ?? "");
+
+  // Restore-from-Kaggle form (local state; credentials come from the store above).
+  const [restoreDataset, setRestoreDataset] = useState("");
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreMessage, setRestoreMessage] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+
+  const handleKaggleRestore = async () => {
+    const dataset = restoreDataset.trim();
+    if (!dataset || restoreBusy) return;
+    setRestoreBusy(true);
+    setRestoreMessage(null);
+    try {
+      await restoreTrainingRunFromKaggle(dataset, null, undefined, {
+        username: store.kaggleUsername,
+        key: store.kaggleKey,
+      });
+      setRestoreDataset("");
+      setRestoreMessage({
+        ok: true,
+        text: translate("studio.history.restoreSuccess"),
+      });
+      emitTrainingRunsChanged();
+    } catch (err) {
+      if (err instanceof HistoryRequestError && err.message) {
+        setRestoreMessage({ ok: false, text: err.message });
+      } else {
+        setRestoreMessage({
+          ok: false,
+          text: translate("studio.history.restoreError"),
+        });
+      }
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
 
   const trySetContextLength = (input: string): number | null => {
     const value = Number(input);
@@ -283,6 +324,46 @@ export function ParamsSection({
                     autoComplete="off"
                     maxLength={255}
                   />
+                </div>
+                <div className="flex flex-col gap-1.5 border-t border-border pt-2.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      {t("studio.params.kaggleRestoreDataset")}
+                      <FieldHint
+                        text={t("studio.params.kaggleRestoreDatasetDescription")}
+                        label={t("studio.params.kaggleRestoreDataset")}
+                      />
+                    </span>
+                  </label>
+                  <Input
+                    value={restoreDataset}
+                    onChange={(event) => setRestoreDataset(event.target.value)}
+                    placeholder={t("studio.params.kaggleRestoreDatasetPlaceholder")}
+                    autoComplete="off"
+                    maxLength={160}
+                    disabled={restoreBusy}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleKaggleRestore()}
+                    disabled={restoreBusy || !restoreDataset.trim()}
+                    className="rounded-md border border-primary bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {restoreBusy
+                      ? t("studio.params.kaggleRestoreBusy")
+                      : t("studio.params.kaggleRestoreButton")}
+                  </button>
+                  {restoreMessage && (
+                    <p
+                      className={
+                        restoreMessage.ok
+                          ? "text-xs text-emerald-600 dark:text-emerald-400"
+                          : "text-xs text-destructive"
+                      }
+                    >
+                      {restoreMessage.text}
+                    </p>
+                  )}
                 </div>
               </div>
             )}

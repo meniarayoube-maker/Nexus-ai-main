@@ -550,7 +550,11 @@ async def restore_training_run_from_kaggle(
             },
         )
     ok, _path, error = await asyncio.to_thread(
-        download_output_from_kaggle, slug, str(dest_path)
+        download_output_from_kaggle,
+        slug,
+        str(dest_path),
+        username = payload.kaggle_username,
+        key = payload.kaggle_key,
     )
     if not ok:
         raise HTTPException(

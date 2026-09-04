@@ -120,11 +120,17 @@ export async function restoreTrainingRunFromKaggle(
   dataset: string,
   runName?: string | null,
   signal?: AbortSignal,
+  credentials?: { username?: string | null; key?: string | null },
 ): Promise<TrainingRunSummary> {
   const response = await authFetch(`/api/train/runs/restore`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataset, run_name: runName ?? null }),
+    body: JSON.stringify({
+      dataset,
+      run_name: runName ?? null,
+      kaggle_username: credentials?.username?.trim() || null,
+      kaggle_key: credentials?.key?.trim() || null,
+    }),
     signal,
   });
   return parseJson<TrainingRunSummary>(response);

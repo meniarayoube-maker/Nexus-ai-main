@@ -2087,6 +2087,12 @@ export const en = {
       kaggleKeyPlaceholder: "xxxxxxxxxxxxxxxxxxxxxxxx",
       kaggleKeyDescription:
         "Optional. Overrides the KAGGLE_KEY environment variable. On Kaggle notebooks this is usually set automatically.",
+      kaggleRestoreDataset: "Restore dataset",
+      kaggleRestoreDatasetPlaceholder: "owner/dataset-slug",
+      kaggleRestoreDatasetDescription:
+        "Download a finished run's Kaggle dataset into this machine and register it in history, using the username and key above.",
+      kaggleRestoreButton: "Restore from Kaggle",
+      kaggleRestoreBusy: "Restoring...",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",

@@ -858,6 +858,12 @@ class TrainingRunRestoreRequest(BaseModel):
     run_name: Optional[str] = Field(
         None, description = "Output directory name; defaults to the dataset slug"
     )
+    kaggle_username: Optional[str] = Field(
+        None, description = "Kaggle username for the download (falls back to env/kaggle.json)"
+    )
+    kaggle_key: Optional[str] = Field(
+        None, description = "Kaggle API key for the download (falls back to env/kaggle.json)"
+    )
 
 
 class DiffusionTrainingStartRequest(BaseModel):

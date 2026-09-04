@@ -14,10 +14,15 @@ version-tolerant caller adapts instead of crashing.
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
-from utils.paths.kaggle_push import push_output_to_kaggle
+from utils.paths.kaggle_push import (
+    _validate_dataset_slug,
+    download_output_from_kaggle,
+    push_output_to_kaggle,
+)
 
 
 def _install_fake_kaggle(monkeypatch, api_cls):
@@ -197,3 +202,109 @@ def test_no_owner_anywhere_still_reports_success_without_url(monkeypatch, tmp_pa
     ok, url, error = push_output_to_kaggle(str(run_dir))
 
     assert (ok, url, error) == (True, None, None)
+
+
+# ---------------------------------------------------------------------------
+# download_output_from_kaggle
+# ---------------------------------------------------------------------------
+
+
+class DownloadApi:
+    """Real-style ``dataset_download`` signature."""
+
+    created = []
+
+    def __init__(self):
+        self.calls = []
+        DownloadApi.created.append(self)
+
+    def authenticate(self):
+        self.calls.append(("authenticate",))
+
+    def dataset_download(self, dataset, path=None, force=False, quiet=True, unzip=False):
+        self.calls.append(("download", dataset, path, force, quiet, unzip))
+        target = Path(path)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "adapter_model.safetensors").write_bytes(b"fake-weights")
+
+
+class LegacyDownloadApi(DownloadApi):
+    """Alternate build with different parameter names."""
+
+    def dataset_download(self, dataset_slug, download_dir=None, unzip_archive=False):
+        self.calls.append(("download", dataset_slug, download_dir, unzip_archive))
+        target = Path(download_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "adapter_model.safetensors").write_bytes(b"fake-weights")
+
+
+def test_validate_dataset_slug():
+    assert _validate_dataset_slug(" owner/slug ") == "owner/slug"
+    assert _validate_dataset_slug("owner/slug/") == "owner/slug"
+    assert _validate_dataset_slug("not-a-slug") is None
+    assert _validate_dataset_slug("a/b/c") is None
+    assert _validate_dataset_slug("") is None
+    assert _validate_dataset_slug(None) is None
+
+
+def test_download_success(monkeypatch, tmp_path):
+    DownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, DownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    dest = tmp_path / "restored_run"
+
+    ok, path, error = download_output_from_kaggle("owner/my-data", str(dest))
+
+    assert (ok, error) == (True, None)
+    assert path == str(dest)
+    assert (dest / "adapter_model.safetensors").is_file()
+    api = DownloadApi.created[-1]
+    assert ("download", "owner/my-data", str(dest), False, True, True) in api.calls
+
+
+def test_download_legacy_signature_is_tolerated(monkeypatch, tmp_path):
+    LegacyDownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, LegacyDownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    dest = tmp_path / "restored_run"
+
+    ok, path, error = download_output_from_kaggle("owner/my-data", str(dest))
+
+    assert (ok, error) == (True, None)
+    assert path == str(dest)
+    assert (dest / "adapter_model.safetensors").is_file()
+    api = LegacyDownloadApi.created[-1]
+    assert api.calls[1][0] == "download"
+    assert api.calls[1][1] == "owner/my-data"
+    assert api.calls[1][2] == str(dest)
+
+
+def test_download_bad_slug_never_touches_api(monkeypatch, tmp_path):
+    DownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, DownloadApi)
+
+    ok, path, error = download_output_from_kaggle("not-a-slug", str(tmp_path / "x"))
+
+    assert ok is False
+    assert path is None
+    assert error is not None and "owner/slug" in error
+    assert DownloadApi.created == []
+
+
+def test_download_api_failure_returns_reason(monkeypatch, tmp_path):
+    class BoomDownloadApi(DownloadApi):
+        def dataset_download(self, dataset, path=None, **kwargs):
+            raise RuntimeError("404 not found")
+
+    DownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, BoomDownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+
+    ok, path, error = download_output_from_kaggle("owner/missing", str(tmp_path / "x"))
+
+    assert ok is False
+    assert path is None
+    assert error is not None and "not found" in error.lower()

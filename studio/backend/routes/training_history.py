@@ -9,6 +9,7 @@ import asyncio
 import json
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal, Optional, Union
 
@@ -16,12 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
 from auth.authentication import authenticated_without_credential, get_current_subject
-from core.training.resume import artifacts_present, can_resume_run
+from core.training.resume import artifacts_present, can_resume_run, has_resume_state
 from models import (
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
     TrainingRunListResponse,
     TrainingRunMetrics,
+    TrainingRunRestoreRequest,
     TrainingRunSummary,
     TrainingRunUpdateRequest,
 )
@@ -457,3 +459,161 @@ async def delete_training_run(
         artifacts_deleted = artifacts_deleted,
         artifacts_kept_reason = artifacts_kept_reason,
     )
+
+
+def _safe_restore_run_name(value: Optional[str], fallback: str) -> str:
+    """Filesystem-safe output directory name for a restored run."""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    cleaned = "".join(
+        c if (c.isalnum() or c in ("-", "_", ".", " ")) else "_"
+        for c in text
+    ).strip(" .")[:80]
+    return cleaned or fallback
+
+
+def _restored_run_facts(output_dir: Path) -> "tuple[Optional[int], Optional[str]]":
+    """Best-effort (final_step, base_model) scraped from restored artifacts."""
+    step: Optional[int] = None
+    checkpoints = sorted(
+        (p for p in output_dir.glob("checkpoint-*") if p.is_dir()),
+        key = lambda p: p.name,
+        reverse = True,
+    )
+    for candidate in [*checkpoints, output_dir]:
+        try:
+            state = json.loads((candidate / "trainer_state.json").read_text(encoding = "utf-8"))
+        except (OSError, ValueError, AttributeError):
+            continue
+        global_step = state.get("global_step") if isinstance(state, dict) else None
+        if isinstance(global_step, int) and not isinstance(global_step, bool) and global_step >= 0:
+            step = global_step
+            break
+    model: Optional[str] = None
+    try:
+        adapter = json.loads((output_dir / "adapter_config.json").read_text(encoding = "utf-8"))
+        base = adapter.get("base_model_name_or_path") if isinstance(adapter, dict) else None
+        if isinstance(base, str) and base.strip():
+            model = base.strip()
+    except (OSError, ValueError, AttributeError):
+        pass
+    return step, model
+
+
+@router.post("/runs/restore", response_model = TrainingRunSummary)
+async def restore_training_run_from_kaggle(
+    payload: TrainingRunRestoreRequest,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
+):
+    """Download a finished run's Kaggle dataset and register it in history.
+
+    Covers the new-session case: ``/kaggle/working`` is gone, but the dataset
+    survives on kaggle.com. The artifacts land under the active write root
+    (``/kaggle/working/unsloth-outputs`` on Kaggle, local outputs elsewhere)
+    and the new row is resumable whenever the checkpoint state is intact.
+    """
+    from storage.studio_db import create_run, finish_run, get_run
+    from utils.paths import resolve_storage_target_write_dir, storage_target_override_root
+    from utils.paths.kaggle_push import _validate_dataset_slug, download_output_from_kaggle
+
+    slug = _validate_dataset_slug(payload.dataset)
+    if slug is None:
+        raise HTTPException(
+            status_code = 422,
+            detail = {
+                "code": "training_restore_bad_dataset",
+                "message": "Expected a Kaggle dataset 'owner/slug'.",
+            },
+        )
+    _owner, name = slug.split("/")
+    run_name = _safe_restore_run_name(payload.run_name, name)
+    target = "kaggle" if storage_target_override_root("kaggle") is not None else "local"
+    try:
+        _used_target, dest = resolve_storage_target_write_dir(target, None, run_name)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code = 500,
+            detail = {
+                "code": "training_restore_dest_failed",
+                "message": f"Could not resolve a restore directory: {exc}",
+            },
+        )
+    dest_path = Path(dest)
+    if dest_path.exists() and any(dest_path.iterdir()):
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "training_restore_exists",
+                "message": f"Already restored at {dest_path}.",
+            },
+        )
+    ok, _path, error = await asyncio.to_thread(
+        download_output_from_kaggle, slug, str(dest_path)
+    )
+    if not ok:
+        raise HTTPException(
+            status_code = 502,
+            detail = {
+                "code": "training_restore_download_failed",
+                "message": error or "Kaggle download failed.",
+            },
+        )
+    usable = await asyncio.to_thread(has_resume_state, str(dest_path))
+    if not usable:
+        usable = await asyncio.to_thread(artifacts_present, str(dest_path))
+    if not usable:
+        raise HTTPException(
+            status_code = 422,
+            detail = {
+                "code": "training_restore_no_artifacts",
+                "message": (
+                    "Downloaded, but no usable training checkpoint or adapter "
+                    f"was found in {dest_path}."
+                ),
+            },
+        )
+    final_step, base_model = _restored_run_facts(dest_path)
+    now = datetime.now(timezone.utc).isoformat()
+    run_id = f"restored_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    model_name = base_model or name
+    config = {
+        "model_name": model_name,
+        "restored_from_kaggle": slug,
+        "storage_target": target,
+    }
+    try:
+        await asyncio.to_thread(
+            create_run,
+            run_id,
+            model_name,
+            f"kaggle:{slug}",
+            json.dumps(config),
+            now,
+            None,
+            output_dir = str(dest_path),
+        )
+        await asyncio.to_thread(
+            finish_run, run_id, "stopped", now, final_step, None, 0.0
+        )
+    except Exception as exc:
+        logger.warning("Failed to register restored run %s: %s", run_id, exc)
+        raise HTTPException(
+            status_code = 500,
+            detail = {
+                "code": "training_restore_register_failed",
+                "message": f"Artifacts are at {dest_path}, but the history row could not be saved.",
+            },
+        )
+    row = await asyncio.to_thread(get_run, run_id)
+    if row is None:
+        raise HTTPException(
+            status_code = 500,
+            detail = {
+                "code": "training_restore_register_failed",
+                "message": f"Artifacts are at {dest_path}, but the history row could not be read back.",
+            },
+        )
+    sharing_on = get_preview_sharing_enabled() and not no_credential
+    return await asyncio.to_thread(_summary_from_row, row, sharing_on)

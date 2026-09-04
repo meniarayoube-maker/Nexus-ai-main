@@ -115,3 +115,17 @@ export async function renameTrainingRun(
   );
   return parseJson<TrainingRunSummary>(response);
 }
+
+export async function restoreTrainingRunFromKaggle(
+  dataset: string,
+  runName?: string | null,
+  signal?: AbortSignal,
+): Promise<TrainingRunSummary> {
+  const response = await authFetch(`/api/train/runs/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset, run_name: runName ?? null }),
+    signal,
+  });
+  return parseJson<TrainingRunSummary>(response);
+}

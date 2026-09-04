@@ -14,6 +14,7 @@ from .training import (
     TrainingRunMetrics,
     TrainingRunDetailResponse,
     TrainingRunDeleteResponse,
+    TrainingRunRestoreRequest,
     TrainingRunUpdateRequest,
 )
 from .models import (
@@ -77,6 +78,7 @@ __all__ = [
     "TrainingRunMetrics",
     "TrainingRunDetailResponse",
     "TrainingRunDeleteResponse",
+    "TrainingRunRestoreRequest",
     "TrainingRunUpdateRequest",
     "ModelDetails",
     "LocalModelInfo",

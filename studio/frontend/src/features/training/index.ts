@@ -69,6 +69,7 @@ export {
   getTrainingRun,
   deleteTrainingRun,
   renameTrainingRun,
+  restoreTrainingRunFromKaggle,
   HistoryRequestError,
 } from "./api/history-api";
 export {

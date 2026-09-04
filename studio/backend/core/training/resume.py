@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
-from utils.paths import outputs_root, resolve_output_dir
+from utils.paths import is_cloud_root, outputs_root, resolve_output_dir
 
 
 def _is_foreign_absolute_path(path_value: str) -> bool:
@@ -26,7 +26,30 @@ def _is_under_outputs(path: Path) -> bool:
         resolved.relative_to(root)
         return True
     except (OSError, RuntimeError, ValueError):
+        pass
+    # Cloud save destinations (Google Drive / Kaggle) live outside
+    # outputs_root by design; admit them only under an active cloud root.
+    try:
+        return bool(is_cloud_root(path))
+    except Exception:
         return False
+
+
+def _resolve_maybe_cloud(path_value: str) -> Optional[Path]:
+    """Resolve like ``resolve_output_dir``, admitting absolute cloud paths.
+
+    The strict resolver rejects anything outside outputs_root, which is where
+    cloud save destinations live by design. Absolute paths under an active
+    cloud root are returned as-is; everything else follows the normal rules
+    (None when unresolvable).
+    """
+    try:
+        return resolve_output_dir(path_value)
+    except (OSError, RuntimeError, ValueError):
+        raw = Path(str(path_value)).expanduser()
+        if raw.is_absolute() and _is_under_outputs(raw):
+            return raw
+        return None
 
 
 def has_resume_state(path_value: Optional[str]) -> bool:
@@ -179,11 +202,10 @@ def artifacts_present(path_value: Optional[str]) -> bool:
         return False
     if _is_foreign_absolute_path(path_value):
         return False
-    try:
-        path = resolve_output_dir(path_value)
-        return _is_under_outputs(path) and path.is_dir()
-    except (OSError, RuntimeError, ValueError):
+    path = _resolve_maybe_cloud(path_value)
+    if path is None:
         return False
+    return _is_under_outputs(path) and path.is_dir()
 
 
 def get_resume_checkpoint_path(
@@ -191,9 +213,8 @@ def get_resume_checkpoint_path(
 ) -> Optional[str]:
     if _is_foreign_absolute_path(path_value):
         return None
-    try:
-        path = resolve_output_dir(path_value)
-    except (OSError, RuntimeError, ValueError):
+    path = _resolve_maybe_cloud(path_value)
+    if path is None:
         return None
     if not _is_under_outputs(path) or not path.is_dir():
         return None
@@ -215,13 +236,15 @@ def get_resume_checkpoint_path(
 def normalize_resume_output_dir(path_value: str) -> str:
     if _is_foreign_absolute_path(path_value):
         raise ValueError("Resume checkpoint uses a path from a different operating system.")
+    path = _resolve_maybe_cloud(path_value)
+    if path is None:
+        raise ValueError("Resume checkpoint path could not be resolved.")
     try:
-        path = resolve_output_dir(path_value)
         path.resolve(strict = True)
     except (OSError, RuntimeError) as error:
         raise ValueError("Resume checkpoint path could not be resolved.") from error
     if not _is_under_outputs(path):
-        raise ValueError("Resume checkpoint must be inside Unsloth outputs.")
+        raise ValueError("Resume checkpoint must be inside Unsloth outputs or a connected cloud folder.")
     return str(path)
 
 

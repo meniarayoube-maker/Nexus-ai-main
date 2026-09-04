@@ -19,7 +19,7 @@ Credentials
 The official ``kaggle`` package (``kaggle-api``) resolves credentials in this
 order, which matches Kaggle's own documentation:
 
-1. Explicit ``username`` / ``key`` keyword arguments (future UI fields).
+1. Explicit ``username`` / ``key`` keyword arguments (training UI fields).
 2. ``KAGGLE_USERNAME`` + ``KAGGLE_KEY`` environment variables (already present
    on Kaggle notebook hosts).
 3. ``~/.kaggle/kaggle.json`` credential file (``huggingface-cli login``-style
@@ -101,22 +101,22 @@ def _write_metadata(
         logger.debug("Could not write dataset-metadata.json for %s: %s", dataset_dir, exc)
 
 
-def _call_kaggle_api(api, method_name: str, folder: str, extra: dict) -> None:
-    """Call ``dataset_create_new``/``dataset_create_version`` across versions.
+def _call_kaggle_api(api, method_name: str, primary: object, primary_keys: tuple, extra: dict) -> None:
+    """Call a ``KaggleApi`` dataset method across ``kaggle-api`` versions.
 
-    Real ``kaggle-api`` releases take the upload folder under different
-    parameter names (``folder`` in current releases; older/alternate builds
-    used ``folder_path``-style names) and accept different option sets, so the
+    ``primary`` is the main argument (upload folder / dataset slug) and
+    ``primary_keys`` are its candidate parameter names (``folder`` in current
+    releases, ``folder_path``-style names in older/alternate builds).  The
     supported parameters are probed with ``inspect`` and only those are
     passed.  When the signature cannot be inspected, the documented
-    ``folder``-first convention is used positionally.
+    primary-first convention is used positionally.
     """
     import inspect
 
     method = getattr(api, method_name)
     candidates: dict[str, object] = dict(extra)
-    for folder_key in ("folder", "folder_path", "dir", "path", "dataset_dir"):
-        candidates.setdefault(folder_key, folder)
+    for key in primary_keys:
+        candidates.setdefault(key, primary)
     try:
         params = inspect.signature(method).parameters
     except (TypeError, ValueError):
@@ -125,15 +125,125 @@ def _call_kaggle_api(api, method_name: str, folder: str, extra: dict) -> None:
         names = set(params.keys())
         has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
         kwargs = {k: v for k, v in candidates.items() if has_var_kw or k in names}
-        folder_keys = [k for k in ("folder", "folder_path", "dir", "path", "dataset_dir") if k in kwargs]
-        if not folder_keys:
-            # No recognized folder parameter: pass the folder positionally.
-            return method(folder, **kwargs)
-        # Drop alias folder keys so only the accepted one is sent.
-        keep = folder_keys[0]
-        kwargs = {k: v for k, v in kwargs.items() if k not in ("folder", "folder_path", "dir", "path", "dataset_dir") or k == keep}
+        present = [k for k in primary_keys if k in kwargs]
+        if not present:
+            # No recognized primary parameter: pass the primary positionally.
+            return method(primary, **kwargs)
+        # Drop alias primary keys so only the accepted one is sent.
+        drop = set(primary_keys) - {present[0]}
+        kwargs = {k: v for k, v in kwargs.items() if k not in drop}
         return method(**kwargs)
-    return method(folder, **{k: v for k, v in extra.items()})
+    return method(primary, **{k: v for k, v in extra.items()})
+
+
+def _authenticate_kaggle(
+    username: Optional[str],
+    key: Optional[str],
+) -> "tuple[object | None, Optional[str], Optional[str]]":
+    """Import the client and authenticate. Returns ``(api, owner, error)``.
+
+    ``owner`` is the dataset owner slug used for metadata/URLs: explicit or
+    injected credentials first, then the client's own username attribute.
+    """
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi  # type: ignore[import-untyped]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Kaggle push unavailable (kaggle package not installed): %s", exc)
+        return (
+            None,
+            None,
+            "Kaggle upload unavailable (kaggle package not installed).  "
+            "Install it with ``pip install kaggle`` and retry.",
+        )
+    resolved_user, resolved_key = _resolve_kaggle_credentials(username, key)
+    owner: Optional[str] = None
+    try:
+        api = KaggleApi()
+        # KaggleApi.authenticate() reads KAGGLE_USERNAME/KAGGLE_KEY env vars
+        # and/or ~/.kaggle/kaggle.json.  If explicit creds were resolved above
+        # we inject them as env vars so authenticate() picks them up.
+        env_backup = {}
+        if resolved_user:
+            env_backup["KAGGLE_USERNAME"] = os.environ.get("KAGGLE_USERNAME")
+            os.environ["KAGGLE_USERNAME"] = resolved_user
+        if resolved_key:
+            env_backup["KAGGLE_KEY"] = os.environ.get("KAGGLE_KEY")
+            os.environ["KAGGLE_KEY"] = resolved_key
+        try:
+            api.authenticate()
+            owner = resolved_user or os.environ.get("KAGGLE_USERNAME") or getattr(api, "username", None) or None
+            if owner is not None:
+                owner = str(owner).strip() or None
+        finally:
+            # Restore env to original state (never leave stale creds in the process).
+            for env_key, original in env_backup.items():
+                if original is None:
+                    os.environ.pop(env_key, None)
+                else:
+                    os.environ[env_key] = original
+    except Exception as exc:  # noqa: BLE001
+        reason = _describe_error(exc)
+        logger.warning("Kaggle auth failed: %s", reason)
+        return (None, None, reason)
+    return (api, owner, None)
+
+
+def _validate_dataset_slug(dataset: object) -> Optional[str]:
+    """Normalize ``owner/slug`` or return None when malformed."""
+    text = str(dataset or "").strip().strip("/")
+    parts = [p for p in text.split("/") if p]
+    if len(parts) != 2 or any(p in (".", "..") for p in parts):
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def download_output_from_kaggle(
+    dataset: str,
+    dest_dir: "str | os.PathLike[str]",
+    *,
+    username: Optional[str] = None,
+    key: Optional[str] = None,
+) -> "tuple[bool, Optional[str], Optional[str]]":
+    """Download a Kaggle dataset (``owner/slug``) into ``dest_dir``.
+
+    Returns ``(ok, path, error)`` with the same non-fatal contract as the
+    upload: callers surface ``error`` but already-existing state is untouched.
+    The archive is unzipped in place so checkpoint layouts land directly under
+    ``dest_dir``.
+    """
+    slug = _validate_dataset_slug(dataset)
+    if slug is None:
+        return (False, None, "Invalid Kaggle dataset: expected 'owner/slug'.")
+    dest = Path(dest_dir).expanduser()
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return (False, None, f"Could not create restore directory {dest}: {exc}")
+
+    api, _owner, auth_error = _authenticate_kaggle(username, key)
+    if auth_error is not None or api is None:
+        return (False, None, auth_error or "Kaggle authentication failed.")
+
+    try:
+        _call_kaggle_api(
+            api,
+            "dataset_download",
+            slug,
+            ("dataset", "dataset_slug", "dataset_name", "dataset_id"),
+            {
+                "path": str(dest),
+                "download_dir": str(dest),
+                "dest": str(dest),
+                "unzip": True,
+                "quiet": True,
+            },
+        )
+        logger.info("Kaggle dataset downloaded: %s -> %s", slug, dest)
+        return (True, str(dest), None)
+    except Exception as exc:  # noqa: BLE001
+        reason = _describe_error(exc)
+        logger.warning("Kaggle download failed for %s -> %s: %s", slug, dest, reason)
+        return (False, None, reason)
 
 
 def _describe_error(exc: Exception) -> str:
@@ -204,54 +314,10 @@ def push_output_to_kaggle(
         logger.warning("Kaggle push skipped: output_dir not a directory: %s", root)
         return (False, None, None)
 
-    # --- 1. Import the kaggle package (lazy) ---
-    try:
-        from kaggle.api.kaggle_api_extended import KaggleApi  # type: ignore[import-untyped]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Kaggle push unavailable (kaggle package not installed): %s", exc)
-        return (
-            False,
-            None,
-            "Kaggle upload unavailable (kaggle package not installed).  "
-            "Install it with ``pip install kaggle`` and retry.",
-        )
-
-    # --- 2. Resolve credentials ---
-    resolved_user, resolved_key = _resolve_kaggle_credentials(username, key)
-
-    # --- 3. Authenticate ---
-    # The dataset URL needs the owner (username).  Prefer the explicit/env
-    # credentials, then the platform-injected KAGGLE_USERNAME, then the
-    # client's own username attribute when it exposes one.
-    owner: Optional[str] = None
-    try:
-        api = KaggleApi()
-        # KaggleApi.authenticate() reads KAGGLE_USERNAME/KAGGLE_KEY env vars
-        # and/or ~/.kaggle/kaggle.json.  If explicit creds were resolved above
-        # we inject them as env vars so authenticate() picks them up.
-        env_backup = {}
-        if resolved_user:
-            env_backup["KAGGLE_USERNAME"] = os.environ.get("KAGGLE_USERNAME")
-            os.environ["KAGGLE_USERNAME"] = resolved_user
-        if resolved_key:
-            env_backup["KAGGLE_KEY"] = os.environ.get("KAGGLE_KEY")
-            os.environ["KAGGLE_KEY"] = resolved_key
-        try:
-            api.authenticate()
-            owner = resolved_user or os.environ.get("KAGGLE_USERNAME") or getattr(api, "username", None) or None
-            if owner is not None:
-                owner = str(owner).strip() or None
-        finally:
-            # Restore env to original state (never leave stale creds in the process).
-            for env_key, original in env_backup.items():
-                if original is None:
-                    os.environ.pop(env_key, None)
-                else:
-                    os.environ[env_key] = original
-    except Exception as exc:  # noqa: BLE001
-        reason = _describe_error(exc)
-        logger.warning("Kaggle auth failed: %s", reason)
-        return (False, None, reason)
+    # --- 1-3. Import, resolve credentials, authenticate ---
+    api, owner, auth_error = _authenticate_kaggle(username, key)
+    if auth_error is not None or api is None:
+        return (False, None, auth_error or "Kaggle authentication failed.")
 
     # --- 4. Build dataset slug & metadata ---
     resolved_slug = (str(slug).strip() if slug else None) or _slug_from_output_dir(root)
@@ -271,6 +337,7 @@ def push_output_to_kaggle(
             api,
             "dataset_create_new",
             str(root),
+            ("folder", "folder_path", "dir", "path", "dataset_dir"),
             {"public": not is_private, "is_private": is_private, "private": is_private, "quiet": True},
         )
         logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
@@ -286,6 +353,7 @@ def push_output_to_kaggle(
             api,
             "dataset_create_version",
             str(root),
+            ("folder", "folder_path", "dir", "path", "dataset_dir"),
             {"version_notes": f"Auto-updated by Unsloth training run: {root.name}", "notes": f"Auto-updated by Unsloth training run: {root.name}", "quiet": True},
         )
         logger.info("Kaggle dataset version updated: %s -> %s", root, dataset_url)

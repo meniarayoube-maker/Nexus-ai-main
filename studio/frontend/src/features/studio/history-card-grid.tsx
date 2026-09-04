@@ -13,6 +13,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { bumpInventoryVersion } from "@/features/hub";
@@ -27,6 +36,7 @@ import {
   onTrainingRunDeleted,
   onTrainingRunUpdated,
   onTrainingRunsChanged,
+  restoreTrainingRunFromKaggle,
   shouldShowTrainingArtifactsDeleted,
   useTrainingActions,
 } from "@/features/training";
@@ -250,6 +260,11 @@ export function HistoryCardGrid({
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleteArtifacts, setDeleteArtifacts] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreDataset, setRestoreDataset] = useState("");
+  const [restoreRunName, setRestoreRunName] = useState("");
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
@@ -409,6 +424,41 @@ export function HistoryCardGrid({
     }
   };
 
+  const openRestore = () => {
+    setRestoreDataset("");
+    setRestoreRunName("");
+    setRestoreError(null);
+    setRestoreOpen(true);
+  };
+
+  const handleRestore = async () => {
+    const dataset = restoreDataset.trim();
+    if (!dataset || restoreBusy) return;
+    setRestoreBusy(true);
+    setRestoreError(null);
+    try {
+      await restoreTrainingRunFromKaggle(
+        dataset,
+        restoreRunName.trim() || null,
+      );
+      setRestoreOpen(false);
+      toast.success(translate("studio.history.restoreSuccess"));
+      // Refresh preserving visible count so "Load more" offsets stay consistent.
+      const limit = Math.max(PAGE_SIZE, runsLengthRef.current);
+      fetchRuns(0, false, limit).catch(() => {
+        // Refresh failed; the row exists server-side and appears on next load.
+      });
+    } catch (err) {
+      if (err instanceof HistoryRequestError && err.message) {
+        setRestoreError(err.message);
+      } else {
+        setRestoreError(translate("studio.history.restoreError"));
+      }
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
+
   if (!loading && error && runs.length === 0) {
     return (
       <div
@@ -432,6 +482,9 @@ export function HistoryCardGrid({
         <p className="text-sm text-muted-foreground">
           {t("studio.history.emptyDescription")}
         </p>
+        <Button variant="outline" size="sm" onClick={openRestore}>
+          {t("studio.history.restoreFromKaggle")}
+        </Button>
       </div>
     );
   }
@@ -444,6 +497,11 @@ export function HistoryCardGrid({
 
   return (
     <div className="contents" aria-label={t("studio.history.title")}>
+      <div className="mb-4 flex justify-end">
+        <Button variant="outline" size="sm" onClick={openRestore}>
+          {t("studio.history.restoreFromKaggle")}
+        </Button>
+      </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {runs.map((run) => {
           const wasContinued =
@@ -733,6 +791,67 @@ export function HistoryCardGrid({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <Dialog
+        open={restoreOpen}
+        onOpenChange={(open) => {
+          if (!open && !restoreBusy) {
+            setRestoreOpen(false);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("studio.history.restoreTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("studio.history.restoreDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">
+                {t("studio.history.restoreDatasetLabel")}
+              </span>
+              <Input
+                value={restoreDataset}
+                onChange={(event) => setRestoreDataset(event.target.value)}
+                placeholder={t("studio.history.restoreDatasetPlaceholder")}
+                disabled={restoreBusy}
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">
+                {t("studio.history.restoreRunNameLabel")}
+              </span>
+              <Input
+                value={restoreRunName}
+                onChange={(event) => setRestoreRunName(event.target.value)}
+                placeholder={t("studio.history.restoreRunNamePlaceholder")}
+                disabled={restoreBusy}
+              />
+            </label>
+            {restoreError && (
+              <p className="text-sm text-destructive">{restoreError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRestoreOpen(false)}
+              disabled={restoreBusy}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() => void handleRestore()}
+              disabled={restoreBusy || !restoreDataset.trim()}
+            >
+              {restoreBusy
+                ? t("studio.history.restoreRestoring")
+                : t("studio.history.restoreSubmit")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

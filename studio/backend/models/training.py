@@ -849,6 +849,17 @@ class TrainingRunDeleteResponse(BaseModel):
     artifacts_kept_reason: Optional[Literal["shared_output_dir", "purge_failed"]] = None
 
 
+class TrainingRunRestoreRequest(BaseModel):
+    """Restore a finished run's artifacts from a Kaggle dataset into this host."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    dataset: str = Field(..., description = "Kaggle dataset 'owner/slug' to download and register")
+    run_name: Optional[str] = Field(
+        None, description = "Output directory name; defaults to the dataset slug"
+    )
+
+
 class DiffusionTrainingStartRequest(BaseModel):
     """Request to start a diffusion (SDXL) LoRA training job.
 

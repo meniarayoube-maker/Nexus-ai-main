@@ -2305,6 +2305,18 @@ export const en = {
       copyPreviewLink: "Copy preview link",
       previewLinkCopied: "Preview link copied",
       previewLinkCopyFailed: "Couldn't copy the link",
+      restoreFromKaggle: "Restore from Kaggle",
+      restoreTitle: "Restore training run from Kaggle",
+      restoreDescription:
+        "Download a finished run's Kaggle dataset (owner/slug) into this machine and register it in history so it can be resumed.",
+      restoreDatasetLabel: "Kaggle dataset",
+      restoreDatasetPlaceholder: "owner/dataset-slug",
+      restoreRunNameLabel: "Run name (optional)",
+      restoreRunNamePlaceholder: "Defaults to the dataset slug",
+      restoreSubmit: "Restore",
+      restoreRestoring: "Restoring...",
+      restoreSuccess: "Training run restored from Kaggle",
+      restoreError: "Failed to restore from Kaggle. Please try again.",
     },
     charts: {
       settings: "Chart Settings",

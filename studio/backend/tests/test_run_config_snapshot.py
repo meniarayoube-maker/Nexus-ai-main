@@ -112,3 +112,37 @@ def test_build_fills_gaps_from_inference_and_manual():
     assert config["training_type"] == "Full Finetuning"
     assert config["format_type"] == "alpaca"
     assert config["hf_dataset"] == "unsloth/alpaca-cleaned"
+
+
+def test_build_drops_dead_session_pins_but_keeps_ids():
+    config = build_restored_config(
+        file_config={
+            "model_name": "unsloth/qwen2.5-0.5b-bnb-4bit",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "unsloth/alpaca-cleaned",
+            "actual_model_repo_id": "unsloth/qwen2.5-0.5b-bnb-4bit",
+            "resource_provenance": {"version": 1, "status": "complete"},
+            "model_snapshot_path": "/root/.cache/huggingface/old-session",
+            "dataset_snapshot_path": "/root/.cache/huggingface/old-data",
+            "model_local_path": "/root/.cache/old-model",
+            "model_known_cached": True,
+            "dataset_known_cached": True,
+        },
+        inferred_model="/kaggle/working/unsloth-outputs/restored",
+        inferred_training_type="LoRA/QLoRA",
+        manual_hf_dataset=None,
+        slug="owner/name",
+        storage_target="kaggle",
+    )
+    # Repo ids survive (fresh resolution); absolute pins do not.
+    assert config["actual_model_repo_id"] == "unsloth/qwen2.5-0.5b-bnb-4bit"
+    assert config["hf_dataset"] == "unsloth/alpaca-cleaned"
+    for dead in (
+        "resource_provenance",
+        "model_snapshot_path",
+        "dataset_snapshot_path",
+        "model_local_path",
+        "model_known_cached",
+        "dataset_known_cached",
+    ):
+        assert dead not in config

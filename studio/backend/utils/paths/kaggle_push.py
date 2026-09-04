@@ -189,8 +189,20 @@ def _authenticate_kaggle(
 
 
 def _validate_dataset_slug(dataset: object) -> Optional[str]:
-    """Normalize ``owner/slug`` or return None when malformed."""
-    text = str(dataset or "").strip().strip("/")
+    """Normalize ``owner/slug`` or return None when malformed.
+
+    Accepts full Kaggle URLs and viewer links (``...?select=...`` query and
+    fragments are stripped) since users paste them verbatim.
+    """
+    text = str(dataset or "").strip()
+    # Full URLs: keep the last two path segments.
+    lower = text.lower()
+    if "://" in text or lower.startswith("kaggle.com/"):
+        path_part = text.split("://", 1)[-1].split("/", 1)[-1]
+        segments = [seg for seg in path_part.split("/") if seg]
+        if len(segments) >= 3 and segments[0].lower() == "datasets":
+            text = "/".join(segments[1:3])
+    text = text.split("?", 1)[0].split("#", 1)[0].strip().strip("/")
     parts = [p for p in text.split("/") if p]
     if len(parts) != 2 or any(p in (".", "..") for p in parts):
         return None

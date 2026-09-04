@@ -41,6 +41,24 @@ _RUN_SPECIFIC_KEYS = frozenset(
     }
 )
 
+# Keys bound to the ORIGINAL session's filesystem/HF cache.  Their absolute
+# snapshot paths die with the old session, and the provenance gate resolves
+# them strictly -- keeping them would permanently refuse resume in any new
+# session ("exact snapshot no longer available").  Dropping them forces fresh
+# resolution (re-download + re-attestation) while the checkpoint weights
+# themselves stay exact from disk.  Repo ids / fingerprints are kept.
+_SESSION_BOUND_KEYS = frozenset(
+    {
+        "resource_provenance",
+        "model_snapshot_path",
+        "dataset_snapshot_path",
+        "model_local_path",
+        "dataset_local_path",
+        "model_known_cached",
+        "dataset_known_cached",
+    }
+)
+
 
 def sanitize_run_config(config: Mapping[str, Any]) -> dict:
     """Return a JSON-safe copy of ``config`` without secrets.
@@ -120,7 +138,7 @@ def build_restored_config(
     paths.
     """
     base = dict(file_config) if isinstance(file_config, dict) else {}
-    for stale in _RUN_SPECIFIC_KEYS:
+    for stale in _RUN_SPECIFIC_KEYS | _SESSION_BOUND_KEYS:
         base.pop(stale, None)
     if not base.get("model_name"):
         base["model_name"] = inferred_model

@@ -293,6 +293,11 @@ class NoDownloadApi:
 def test_validate_dataset_slug():
     assert _validate_dataset_slug(" owner/slug ") == "owner/slug"
     assert _validate_dataset_slug("owner/slug/") == "owner/slug"
+    assert _validate_dataset_slug("owner/slug?select=checkpoint-5") == "owner/slug"
+    assert (
+        _validate_dataset_slug("https://www.kaggle.com/datasets/owner/slug?select=x")
+        == "owner/slug"
+    )
     assert _validate_dataset_slug("not-a-slug") is None
     assert _validate_dataset_slug("a/b/c") is None
     assert _validate_dataset_slug("") is None

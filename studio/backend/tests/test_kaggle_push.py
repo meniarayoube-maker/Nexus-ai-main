@@ -330,6 +330,8 @@ def test_validate_dataset_slug():
 
 
 def test_download_success(monkeypatch, tmp_path):
+    import tempfile as _tempfile
+
     DownloadApi.created.clear()
     _install_fake_kaggle(monkeypatch, DownloadApi)
     monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
@@ -342,10 +344,16 @@ def test_download_success(monkeypatch, tmp_path):
     assert path == str(dest)
     assert (dest / "adapter_model.safetensors").is_file()
     api = DownloadApi.created[-1]
-    assert ("download", "owner/my-data", str(dest), False, True, True) in api.calls
+    # Downloaded into system-temp staging first, then moved into place.
+    assert api.calls[1][0] == "download"
+    assert api.calls[1][1] == "owner/my-data"
+    assert Path(api.calls[1][2]).parent.parent == Path(_tempfile.gettempdir())
+    assert Path(api.calls[1][2]).name == "payload"
 
 
 def test_download_legacy_signature_is_tolerated(monkeypatch, tmp_path):
+    import tempfile as _tempfile
+
     LegacyDownloadApi.created.clear()
     _install_fake_kaggle(monkeypatch, LegacyDownloadApi)
     monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
@@ -360,7 +368,7 @@ def test_download_legacy_signature_is_tolerated(monkeypatch, tmp_path):
     api = LegacyDownloadApi.created[-1]
     assert api.calls[1][0] == "download"
     assert api.calls[1][1] == "owner/my-data"
-    assert api.calls[1][2] == str(dest)
+    assert Path(api.calls[1][2]).parent.parent == Path(_tempfile.gettempdir())
 
 
 def test_download_bad_slug_never_touches_api(monkeypatch, tmp_path):
@@ -373,6 +381,49 @@ def test_download_bad_slug_never_touches_api(monkeypatch, tmp_path):
     assert path is None
     assert error is not None and "owner/slug" in error
     assert DownloadApi.created == []
+
+
+def test_download_stages_in_system_temp_and_cleans_up(monkeypatch, tmp_path):
+    import tempfile as _tempfile
+
+    DownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, DownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    dest = tmp_path / "restored_run"
+    before = {p.name for p in Path(_tempfile.gettempdir()).iterdir() if p.name.startswith(".kaggle-restore-")}
+
+    ok, path, error = download_output_from_kaggle("owner/my-data", str(dest))
+
+    assert (ok, error) == (True, None)
+    assert path == str(dest)
+    assert (dest / "adapter_model.safetensors").is_file()
+    after = {p.name for p in Path(_tempfile.gettempdir()).iterdir() if p.name.startswith(".kaggle-restore-")}
+    assert after == before
+
+
+def test_failed_download_leaves_no_partials_behind(monkeypatch, tmp_path):
+    class PartialDownloadApi(DownloadApi):
+        def dataset_download(self, dataset, path=None, **kwargs):
+            target = Path(path)
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "partial.bin").write_bytes(b"incomplete")
+            raise RuntimeError("boom mid-download")
+
+    DownloadApi.created.clear()
+    _install_fake_kaggle(monkeypatch, PartialDownloadApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    dest = tmp_path / "restored_run"
+
+    ok, path, error = download_output_from_kaggle("owner/my-data", str(dest))
+
+    assert ok is False
+    assert path is None
+    assert error is not None and "boom" in error
+    # No partial files linger to trip the "already restored" guard next time.
+    assert dest.is_dir()
+    assert list(dest.iterdir()) == []
 
 
 def test_download_api_failure_returns_reason(monkeypatch, tmp_path):
@@ -393,6 +444,8 @@ def test_download_api_failure_returns_reason(monkeypatch, tmp_path):
 
 
 def test_download_prefers_download_files_method(monkeypatch, tmp_path):
+    import tempfile as _tempfile
+
     FilesDownloadApi.created.clear()
     _install_fake_kaggle(monkeypatch, FilesDownloadApi)
     monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
@@ -405,7 +458,9 @@ def test_download_prefers_download_files_method(monkeypatch, tmp_path):
     assert path == str(dest)
     assert (dest / "adapter_model.safetensors").is_file()
     api = FilesDownloadApi.created[-1]
-    assert ("download_files", "owner/my-data", str(dest), False, True, True) in api.calls
+    assert api.calls[1][0] == "download_files"
+    assert api.calls[1][1] == "owner/my-data"
+    assert Path(api.calls[1][2]).parent.parent == Path(_tempfile.gettempdir())
 
 
 def test_download_without_any_method_is_precise(monkeypatch, tmp_path):

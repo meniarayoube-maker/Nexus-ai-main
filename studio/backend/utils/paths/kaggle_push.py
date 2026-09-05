@@ -360,6 +360,42 @@ def _validate_dataset_slug(dataset: object) -> Optional[str]:
     return f"{parts[0]}/{parts[1]}"
 
 
+def _move_staged_tree(stage_dir: Path, dest: Path) -> None:
+    """Move every top-level entry of a staging dir into ``dest``.
+
+    Used after downloading into system temp: cross-filesystem moves become a
+    copy+delete handled by :func:`shutil.move`.  Raises on failure (the caller
+    cleans partials and reports precisely).
+    """
+    import shutil as _shutil
+
+    for entry in sorted(stage_dir.iterdir()):
+        _shutil.move(str(entry), str(dest / entry.name))
+
+
+def _remove_new_entries(dest: Path, pre_existing: set) -> None:
+    """Remove entries that appeared in ``dest`` during a failed download.
+
+    Prevents partial trees from tripping the "already restored" guard on the
+    next attempt.  Best-effort only; never raises.
+    """
+    import shutil as _shutil
+
+    try:
+        current = {p.name for p in dest.iterdir()}
+    except OSError:
+        return
+    for name in sorted(current - set(pre_existing)):
+        try:
+            target = dest / name
+            if target.is_dir() and not target.is_symlink():
+                _shutil.rmtree(target, ignore_errors = True)
+            else:
+                target.unlink(missing_ok = True)
+        except OSError:
+            continue
+
+
 def download_output_from_kaggle(
     dataset: str,
     dest_dir: "str | os.PathLike[str]",
@@ -404,6 +440,31 @@ def download_output_from_kaggle(
         logger.warning("Kaggle download failed for %s: %s", slug, reason)
         return (False, None, reason)
 
+    # The client downloads one giant <slug>.zip and extracts it in place, so
+    # downloading straight into the destination needs ~2x free there.  Stage
+    # in the roomy system temp instead (/tmp on Kaggle hosts), then move the
+    # extracted tree into place: peak cost on the working disk is ~1x final.
+    import tempfile
+    import uuid
+
+    try:
+        pre_existing = {p.name for p in dest.iterdir()}
+    except OSError:
+        pre_existing = set()
+    stage_parent = Path(tempfile.gettempdir()) / f".kaggle-restore-{uuid.uuid4().hex[:12]}"
+    try:
+        stage_parent.mkdir(parents = True, exist_ok = False)
+    except OSError as exc:
+        return (False, None, f"Could not create download staging dir: {exc}")
+    stage_dir = stage_parent / "payload"
+    try:
+        stage_dir.mkdir(parents = True, exist_ok = True)
+    except OSError as exc:
+        import shutil as _shutil
+
+        _shutil.rmtree(stage_parent, ignore_errors = True)
+        return (False, None, f"Could not create download staging dir: {exc}")
+
     try:
         _call_kaggle_api(
             api,
@@ -411,16 +472,18 @@ def download_output_from_kaggle(
             slug,
             ("dataset", "dataset_slug", "dataset_name", "dataset_id"),
             {
-                "path": str(dest),
-                "download_dir": str(dest),
-                "dest": str(dest),
+                "path": str(stage_dir),
+                "download_dir": str(stage_dir),
+                "dest": str(stage_dir),
                 "unzip": True,
                 "quiet": True,
             },
         )
+        _move_staged_tree(stage_dir, dest)
         logger.info("Kaggle dataset downloaded: %s -> %s", slug, dest)
         return (True, str(dest), None)
     except Exception as exc:  # noqa: BLE001
+        _remove_new_entries(dest, pre_existing)
         reason = _describe_error(exc, operation = "download")
         # Raw exception for forensics: the mapped reason above is user-facing
         # (e.g. a server 404 hides whether it is a bad slug, a private
@@ -428,6 +491,10 @@ def download_output_from_kaggle(
         logger.warning("Kaggle download raw error for %s: %r", slug, exc)
         logger.warning("Kaggle download failed for %s -> %s: %s", slug, dest, reason)
         return (False, None, reason)
+    finally:
+        import shutil as _shutil
+
+        _shutil.rmtree(stage_parent, ignore_errors = True)
 
 
 def _describe_error(exc: Exception, *, operation: str = "upload") -> str:

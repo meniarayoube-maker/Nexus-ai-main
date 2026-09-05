@@ -827,6 +827,102 @@ class UnslothTrainer:
 
         return config
 
+    def _save_final_root_files(self, output_dir) -> None:
+        """Final root copies: model rewrite, tokenizer, adapter-config patch.
+
+        Shared by the legacy in-place stop-save and the /tmp-staged one.  On
+        ENOSPC the model rewrite is skipped (with its partial removed) because
+        the checkpoint bundle -- the resumable artifact -- is already safe;
+        anything else re-raises.
+        """
+        try:
+            self.trainer.save_model()
+        except Exception as exc:
+            # Tight disk: the checkpoint bundle above is the resumable
+            # artifact; the final root rewrite is a convenience copy.
+            # Skip it on ENOSPC (and remove its partial) rather than
+            # failing the whole stop-save over it.  Anything else re-raises.
+            if not _is_disk_full_error(exc):
+                raise
+            try:
+                for _partial_name in ("model.safetensors", "adapter_model.safetensors"):
+                    _partial = Path(str(output_dir)) / _partial_name
+                    if _partial.is_file():
+                        _partial.unlink()
+            except OSError:
+                pass
+            _no_space_msg = (
+                "Final model copy skipped: no space left on device. The stop "
+                "checkpoint bundle is intact and resumable; free disk space, "
+                "then resume or export from the checkpoint."
+            )
+            logger.warning(_no_space_msg)
+            self._record_warning(_no_space_msg)
+        self.tokenizer.save_pretrained(output_dir)
+        self._patch_adapter_config(output_dir)
+
+    def _finalize_stop_save_via_tmp(self, output_dir, label, upload_cb) -> None:
+        """Stop-and-save through /tmp staging for tight disks (SFT-family only).
+
+        The working disk cannot hold old + new bundles side by side, so the
+        fresh bundle is written under system temp, verified, uploaded, and
+        ONLY then swapped into place (old checkpoints pruned post-upload, when
+        Kaggle versions hold the rollback).  Any failure keeps the previous
+        checkpoint intact locally and raises with a precise, recoverable
+        message (mirroring the MLX worker protocol via ``stop_save_failed``).
+        """
+        from core.training import checkpoint_swap as _swap
+        from core.training.resume import ensure_stop_checkpoint_bundle
+
+        state = getattr(self.trainer, "state", None)
+        try:
+            step = int(getattr(state, "global_step", 0) or 0)
+        except (TypeError, ValueError):
+            step = 0
+        ckpt_name = f"checkpoint-{step}"
+
+        def _write_bundle(tmp_ckpt_str: str) -> None:
+            prev_args_dir = self.trainer.args.output_dir
+            self.trainer.args.output_dir = os.path.dirname(tmp_ckpt_str)
+            try:
+                self.trainer._save_checkpoint(self.trainer.model, trial = None)
+            finally:
+                self.trainer.args.output_dir = prev_args_dir
+
+        res = _swap.execute_stop_swap(
+            working_dir = str(output_dir),
+            checkpoint_name = ckpt_name,
+            write_bundle = _write_bundle,
+            verify_bundle = None,
+            upload_bundle = lambda path: _swap.safe_upload_bundle(upload_cb, path),
+        )
+        if res.status != "swapped":
+            self.stop_save_failed = True
+            raise RuntimeError(res.message)
+        self._save_final_root_files(output_dir)
+        failure = ensure_stop_checkpoint_bundle(self.trainer, output_dir)
+        try:
+            _stop_ckpt_step = int(getattr(getattr(self.trainer, "state", None), "global_step", 0) or 0)
+        except (TypeError, ValueError):
+            _stop_ckpt_step = 0
+        if failure is not None:
+            self.stop_save_failed = True
+            raise RuntimeError(
+                "Failed to save a resumable checkpoint after stop. "
+                "Model files were saved, but this run cannot be resumed. "
+                f"({failure})"
+            )
+        logger.info(
+            "Stop-and-save checkpoint verified resumable at %s",
+            os.path.join(str(output_dir), f"checkpoint-{_stop_ckpt_step}"),
+        )
+        msg = f"{label} training stopped" if label else "Training stopped"
+        logger.info(f"\n{msg}. Model saved to {output_dir}\n")
+        self._update_progress(
+            is_training = False,
+            status_message = f"Training stopped. Model saved to {output_dir}",
+        )
+
     def _finalize_training(
         self,
         output_dir,
@@ -834,32 +930,18 @@ class UnslothTrainer:
     ):
         """Save model after training and update progress. Used by all training branches."""
         if self.should_stop and self.save_on_stop:
+            from core.training import checkpoint_swap as _swap
+
+            _upload_cb = getattr(self, "storage_upload_callback", None)
+            if (
+                _upload_cb is not None
+                and not getattr(self, "_audio_type", None)
+                and _swap.plan_stop_save(str(output_dir)) == "tmp_flow"
+            ):
+                self._finalize_stop_save_via_tmp(output_dir, label, _upload_cb)
+                return
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
-            try:
-                self.trainer.save_model()
-            except Exception as exc:
-                # Tight disk: the checkpoint bundle above is the resumable
-                # artifact; the final root rewrite is a convenience copy.
-                # Skip it on ENOSPC (and remove its partial) rather than
-                # failing the whole stop-save over it.  Anything else re-raises.
-                if not _is_disk_full_error(exc):
-                    raise
-                try:
-                    for _partial_name in ("model.safetensors", "adapter_model.safetensors"):
-                        _partial = Path(str(output_dir)) / _partial_name
-                        if _partial.is_file():
-                            _partial.unlink()
-                except OSError:
-                    pass
-                _no_space_msg = (
-                    "Final model copy skipped: no space left on device. The stop "
-                    "checkpoint bundle is intact and resumable; free disk space, "
-                    "then resume or export from the checkpoint."
-                )
-                logger.warning(_no_space_msg)
-                self._record_warning(_no_space_msg)
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            self._save_final_root_files(output_dir)
             # Stop-and-save promises a *resumable* checkpoint, not just model
             # files: verify the bundle and backfill missing trainer state
             # (optimizer/scheduler), which adapter-only fast paths may skip.

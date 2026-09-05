@@ -2740,7 +2740,12 @@ def _maybe_push_hf_output(output_dir: "str | None", config: dict) -> dict:
     return {"ok": ok, "repo_url": repo_url, "error": error}
 
 
-def _maybe_push_kaggle_output(output_dir: "str | None", config: dict) -> dict:
+def _maybe_push_kaggle_output(
+    output_dir: "str | None",
+    config: dict,
+    slug: "str | None" = None,
+    description: "str | None" = None,
+) -> dict:
     """Upload a finished run to Kaggle as a Dataset for the ``kaggle`` storage target.
 
     Runs on a completed/stopped run that wrote to ``/kaggle/working/unsloth-outputs``.
@@ -2757,9 +2762,11 @@ def _maybe_push_kaggle_output(output_dir: "str | None", config: dict) -> dict:
 
         ok, dataset_url, error = push_output_to_kaggle(
             output_dir,
+            slug = slug,
             is_private=bool(config.get("kaggle_private", True)),
             username=config.get("kaggle_username") or None,
             key=config.get("kaggle_key") or None,
+            description = description,
         )
     except Exception as exc:  # noqa: BLE001 - structural failure; surface it, don't crush the run.
         message = f"Kaggle upload failed unexpectedly: {exc}"
@@ -4998,6 +5005,40 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         max_steps = config.get("max_steps", 0)
         save_steps = config.get("save_steps", 0)
 
+        # Stop-save upload callback for the /tmp-staged flow (see
+        # core.training.checkpoint_swap): the trainer calls it with the fresh
+        # tmp bundle and expects (ok, url, error) back.  Slug/description come
+        # from the RUN's output dir -- never from the tmp path.  Only set for
+        # kaggle/huggingface targets; the trainer additionally gates out audio
+        # branches, and everything else ignores the attribute.
+        trainer.storage_upload_callback = None
+        _upload_target = str(config.get("storage_target") or "").strip().lower()
+        if _upload_target in ("kaggle", "huggingface"):
+            from utils.paths.kaggle_push import _slug_from_output_dir
+
+            _run_slug = _slug_from_output_dir(Path(output_dir))
+            _run_desc = f"Unsloth training output: {Path(output_dir).name}"
+            _run_cfg = config
+            _run_eq = event_queue
+
+            def _storage_upload_callback(tmp_bundle_dir):
+                try:
+                    res = _report_cuda_storage_push(
+                        _run_eq,
+                        tmp_bundle_dir,
+                        _run_cfg,
+                        run_slug = _run_slug,
+                        description = _run_desc,
+                    )
+                except Exception as exc:
+                    return (False, None, f"upload dispatch crashed: {exc}")
+                if not isinstance(res, dict) or not res.get("ok"):
+                    err = res.get("error") if isinstance(res, dict) else None
+                    return (False, None, err or "upload failed")
+                return (True, res.get("dataset_url") or res.get("repo_url"), None)
+
+            trainer.storage_upload_callback = _storage_upload_callback
+
         trainer._train_worker(
             dataset,
             output_dir = output_dir,
@@ -5120,7 +5161,13 @@ def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
         pass
 
 
-def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", cfg: dict) -> None:
+def _report_cuda_storage_push(
+    event_queue: Any,
+    output_dir_local: "str | None",
+    cfg: dict,
+    run_slug: "str | None" = None,
+    description: "str | None" = None,
+) -> "dict | None":
     """Upload dispatch for the CUDA/SFT + embedding worker paths.
 
     For ``huggingface``/``kaggle`` targets run the matching
@@ -5178,7 +5225,9 @@ def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", 
         if target == "huggingface":
             res = _maybe_push_hf_output(output_dir_local, cfg)
         else:
-            res = _maybe_push_kaggle_output(output_dir_local, cfg)
+            res = _maybe_push_kaggle_output(
+                output_dir_local, cfg, slug = run_slug, description = description
+            )
     except Exception as exc:
         res = {"ok": False, "error": f"upload crashed: {exc}"}
     finally:
@@ -5188,7 +5237,7 @@ def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", 
         except Exception:
             pass
     if not res:
-        return
+        return None
     url = res.get(url_key)
     error = res.get("error")
     try:
@@ -5201,6 +5250,7 @@ def _report_cuda_storage_push(event_queue: Any, output_dir_local: "str | None", 
             event_queue.put({"type": "warning", "message": message, "ts": time.time()})
     except Exception:
         pass
+    return res
 
 
 def _emit_resource_provenance(

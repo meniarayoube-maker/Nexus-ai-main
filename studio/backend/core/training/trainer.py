@@ -275,6 +275,33 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     return False if saw_a_usable_value else None
 
 
+def _is_disk_full_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is a disk-full failure (any library spelling).
+
+    ENOSPC surfaces differently per layer: ``OSError(errno 28)`` from the
+    stdlib, but e.g. safetensors raises its own ``SafetensorError`` whose only
+    machine-readable trace is the message text.  Match errno first, then the
+    known message spellings; anything else is some other failure.
+    """
+    try:
+        import errno as _errno
+
+        if isinstance(exc, OSError) and exc.errno == _errno.ENOSPC:
+            return True
+    except Exception:
+        pass
+    try:
+        text = f"{type(exc).__name__}: {exc}".lower()
+    except Exception:
+        return False
+    return (
+        "no space left on device" in text
+        or "os error 28" in text
+        or "enospc" in text
+        or "errno 28" in text
+    )
+
+
 class UnslothTrainer:
     """
     Unsloth Training Backend
@@ -299,6 +326,12 @@ class UnslothTrainer:
         # MLX worker protocol): the worker keeps this run an explained error
         # instead of a silent "saved but cannot resume".
         self.stop_save_failed = False
+        # One-shot early disk guard (see _check_final_save_disk): armed per run
+        # in _train_worker once output_dir is known, fired from the progress
+        # callback when optimizer state first becomes measurable.
+        self._save_disk_check_dir = None
+        self._save_disk_check_full = True
+        self._save_disk_check_done = False
         self.load_in_4bit = True
 
         self.is_cpt = False  # Continued Pretraining
@@ -517,6 +550,75 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _check_final_save_disk(self) -> None:
+        """One-shot early warning when free disk likely cannot hold the final save.
+
+        Runs once optimizer state has materialized (so both terms are measured,
+        not guessed): model params + optimizer state vs free space at the
+        output dir.  A full disk fails the FINAL save after hours of training,
+        so warn here -- at minute ~2, while stopping is still cheap.
+        Warning only, never blocks: the total is an estimate (final bundle +
+        final root rewrite + margin), and a tight-but-fitting disk must not
+        stop training.  Never raises.
+        """
+        try:
+            output_dir = getattr(self, "_save_disk_check_dir", None)
+            hf_trainer = getattr(self, "trainer", None)
+            model = getattr(hf_trainer, "model", None) or getattr(self, "model", None)
+            if not output_dir or model is None:
+                return
+            try:
+                model_bytes = sum(
+                    int(param.numel()) * int(param.element_size())
+                    for param in model.parameters()
+                )
+            except Exception:
+                return
+            if model_bytes <= 0:
+                return
+            optim_bytes = 0
+            optimizer = getattr(hf_trainer, "optimizer", None)
+            state = getattr(optimizer, "state", None)
+            entries = list(state.values()) if isinstance(state, dict) else []
+            for entry in entries:
+                candidates = entry.values() if isinstance(entry, dict) else [entry]
+                for value in candidates:
+                    try:
+                        if hasattr(value, "numel") and hasattr(value, "element_size"):
+                            optim_bytes += int(value.numel()) * int(value.element_size())
+                    except Exception:
+                        continue
+            if optim_bytes <= 0:
+                return  # states not materialized yet; retry on a later on_log
+            self._save_disk_check_done = True
+            if getattr(self, "_save_disk_check_full", True):
+                need_bytes = int((2 * model_bytes + optim_bytes) * 1.1)
+            else:
+                need_bytes = int((optim_bytes * 2 + 512 * 1024**2) * 1.2)
+            import shutil as _shutil
+
+            try:
+                free_bytes = _shutil.disk_usage(str(output_dir)).free
+            except Exception:
+                return
+            need_gb = need_bytes / 1024**3
+            free_gb = free_bytes / 1024**3
+            logger.info(
+                "Final-save disk check: estimated need ~%.1f GB, free %.1f GB at %s",
+                need_gb,
+                free_gb,
+                output_dir,
+            )
+            if free_bytes < need_bytes:
+                self._record_warning(
+                    f"Low disk space for the final save (estimated need ~{need_gb:.1f} GB, "
+                    f"only {free_gb:.1f} GB free at the output directory). A full disk fails "
+                    "the final save after hours of training -- free space now or stop while "
+                    "it is still cheap."
+                )
+        except Exception as exc:
+            logger.debug("Final-save disk check skipped: %s", exc)
+
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
         from transformers import TrainerCallback
@@ -612,6 +714,10 @@ class UnslothTrainer:
                     )
                 current_step = state.global_step
                 grad_norm = logs.get("grad_norm", None)
+                # One-shot final-save disk guard: optimizer state exists from
+                # here on, so the estimate is measured, not guessed.
+                if not trainer_ref._save_disk_check_done and current_step >= 1:
+                    trainer_ref._check_final_save_disk()
 
                 elapsed_seconds = None
                 if trainer_ref.training_start_time is not None:
@@ -729,7 +835,29 @@ class UnslothTrainer:
         """Save model after training and update progress. Used by all training branches."""
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
-            self.trainer.save_model()
+            try:
+                self.trainer.save_model()
+            except Exception as exc:
+                # Tight disk: the checkpoint bundle above is the resumable
+                # artifact; the final root rewrite is a convenience copy.
+                # Skip it on ENOSPC (and remove its partial) rather than
+                # failing the whole stop-save over it.  Anything else re-raises.
+                if not _is_disk_full_error(exc):
+                    raise
+                try:
+                    for _partial_name in ("model.safetensors", "adapter_model.safetensors"):
+                        _partial = Path(str(output_dir)) / _partial_name
+                        if _partial.is_file():
+                            _partial.unlink()
+                except OSError:
+                    pass
+                _no_space_msg = (
+                    "Final model copy skipped: no space left on device. The stop "
+                    "checkpoint bundle is intact and resumable; free disk space, "
+                    "then resume or export from the checkpoint."
+                )
+                logger.warning(_no_space_msg)
+                self._record_warning(_no_space_msg)
             self.tokenizer.save_pretrained(output_dir)
             self._patch_adapter_config(output_dir)
             # Stop-and-save promises a *resumable* checkpoint, not just model
@@ -3766,6 +3894,14 @@ class UnslothTrainer:
                 else:
                     raise
             ensure_dir(Path(output_dir))
+
+            # Arm the one-shot final-save disk guard: a full disk fails the
+            # FINAL save after hours of training, so estimate early (fired from
+            # the progress callback once optimizer state is measurable).
+            self._save_disk_check_dir = output_dir
+            _ttype = str(training_args.get("training_type", "") or "")
+            self._save_disk_check_full = ("full" in _ttype.lower()) if _ttype else True
+            self._save_disk_check_done = False
 
             # ========== AUDIO TRAINER BRANCH ==========
             if self._audio_type == "csm":

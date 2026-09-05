@@ -524,3 +524,34 @@ def test_flat_output_dir_uploads_root_directly(monkeypatch, tmp_path):
     assert ok is True
     api = RealStyleApi.created[-1]
     assert api.calls[1][1] == str(run_dir)
+
+
+def test_disk_gate_measures_system_temp_not_source(monkeypatch, tmp_path):
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, RealStyleApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    seen = {}
+
+    class _Usage:
+        total = 10**12
+        used = 0
+        free = 10**12
+
+    def _fake_usage(path):
+        seen["path"] = str(path)
+        return _Usage()
+
+    monkeypatch.setattr(_shutil, "disk_usage", _fake_usage)
+
+    ok, _url, _error = push_output_to_kaggle(str(run_dir))
+
+    assert ok is True
+    # The temp archive is built by the client in the system temp dir, so the
+    # gate must measure that filesystem -- never the source dir.
+    assert Path(seen["path"]) == Path(_tempfile.gettempdir())

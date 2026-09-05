@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -44,9 +45,13 @@ logger = get_logger(__name__)
 PushResult = Tuple[bool, Optional[str], Optional[str]]
 """``(ok, dataset_url, error)``."""
 
-# Upload preflight: the client zips directories before sending, so the disk
-# must hold roughly this multiple of the payload (archive + margin).
-UPLOAD_DISK_MULTIPLE = 2.0
+# Upload preflight: the client's DirectoryArchive materializes the temp
+# archive in the SYSTEM temp dir (tempfile.gettempdir()) -- often a different
+# filesystem than the source (e.g. Kaggle: /tmp on overlay vs /kaggle/working
+# on /dev/loop1).  The archive holds already-compressed weights, so it costs
+# ~1x payload; the multiple below is archive + safety margin, measured on the
+# temp filesystem -- never on the source dir.
+UPLOAD_DISK_MULTIPLE = 1.5
 # Payloads at/above this size get a prominent "large upload" log line so a
 # long silence is expected, not alarming.
 LARGE_UPLOAD_BYTES = 2 * 1024**3
@@ -519,16 +524,22 @@ def push_output_to_kaggle(
         return (False, None, reason)
     try:
         _staged_bytes = upload_source_bytes(upload_dir)
+        # The temp archive is built by the client in the SYSTEM temp dir, not
+        # next to the source: measure free space there.  On Kaggle these are
+        # different filesystems (/tmp on overlay vs /kaggle/working on loop),
+        # so gating on the source disk both blocks valid uploads and misses
+        # real temp pressure.
+        _temp_dir = tempfile.gettempdir()
         try:
-            _free_bytes = shutil.disk_usage(upload_dir).free
+            _free_bytes = shutil.disk_usage(_temp_dir).free
         except OSError as exc:
             _free_bytes = None
-            logger.warning("Could not check free disk for %s: %s", upload_dir, exc)
+            logger.warning("Could not check free disk for %s: %s", _temp_dir, exc)
         if _free_bytes is not None and _free_bytes < _staged_bytes * UPLOAD_DISK_MULTIPLE:
             reason = (
-                f"Not enough free disk for the Kaggle upload: payload "
+                f"Not enough free disk for the Kaggle upload temporary archive: payload "
                 f"{_format_bytes(_staged_bytes)} needs ~{_format_bytes(_staged_bytes * UPLOAD_DISK_MULTIPLE)} "
-                f"free, only {_format_bytes(_free_bytes)} available at {upload_dir}."
+                f"free in the system temp dir {_temp_dir}, only {_format_bytes(_free_bytes)} available."
             )
             logger.warning("Kaggle push refused: %s", reason)
             return (False, None, reason)

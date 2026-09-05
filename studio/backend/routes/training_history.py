@@ -486,9 +486,11 @@ def _restored_run_facts(output_dir: Path) -> "tuple[Optional[int], Optional[str]
     resumed start request validates.
     """
     step: Optional[int] = None
+    # Numeric step order: lexicographic order would read checkpoint-5 as newer
+    # than checkpoint-19 and report a stale final_step.
     checkpoints = sorted(
         (p for p in output_dir.glob("checkpoint-*") if p.is_dir()),
-        key = lambda p: p.name,
+        key = _checkpoint_dir_step,
         reverse = True,
     )
     for candidate in [*checkpoints, output_dir]:
@@ -529,7 +531,11 @@ async def restore_training_run_from_kaggle(
     """
     from storage.studio_db import create_run, finish_run, get_run
     from utils.paths import resolve_storage_target_write_dir, storage_target_override_root
-    from utils.paths.kaggle_push import _validate_dataset_slug, download_output_from_kaggle
+    from utils.paths.kaggle_push import (
+        _checkpoint_dir_step,
+        _validate_dataset_slug,
+        download_output_from_kaggle,
+    )
 
     slug = _validate_dataset_slug(payload.dataset)
     if slug is None:

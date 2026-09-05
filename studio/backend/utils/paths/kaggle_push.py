@@ -114,15 +114,31 @@ def _slug_from_output_dir(output_dir: Path) -> str:
     return name or "unsloth-output"
 
 
+def _checkpoint_dir_step(path: Path) -> int:
+    """Numeric step of a ``checkpoint-N`` dir name, else -1.
+
+    Checkpoint directories MUST sort numerically: lexicographic order puts
+    ``checkpoint-5`` after ``checkpoint-19`` ('5' > '1'), which once shipped a
+    stale bundle as "latest".
+    """
+    name = path.name if isinstance(path, Path) else str(path)
+    if not name.startswith("checkpoint-"):
+        return -1
+    try:
+        return int(name.split("-", 1)[1])
+    except (ValueError, IndexError):
+        return -1
+
+
 def _latest_checkpoint_dir(root: Path):
     """Newest ``checkpoint-*`` subdir, preferring a resume-valid bundle.
 
-    Falls back to the newest dir by name when validity cannot be checked
-    (e.g. missing optional deps) -- the downloader re-validates anyway.
+    Falls back to the newest dir by step number when validity cannot be
+    checked (e.g. missing optional deps) -- the downloader re-validates anyway.
     """
     candidates = sorted(
         (p for p in root.iterdir() if p.is_dir() and p.name.startswith("checkpoint-")),
-        key = lambda p: p.name,
+        key = _checkpoint_dir_step,
         reverse = True,
     )
     if not candidates:
@@ -170,7 +186,7 @@ def _build_upload_staging(root: Path):
     """
     checkpoints = sorted(
         (p for p in root.iterdir() if p.is_dir() and p.name.startswith("checkpoint-")),
-        key = lambda p: p.name,
+        key = _checkpoint_dir_step,
     )
     if not checkpoints:
         return root, (lambda: None), []
@@ -406,6 +422,10 @@ def download_output_from_kaggle(
         return (True, str(dest), None)
     except Exception as exc:  # noqa: BLE001
         reason = _describe_error(exc, operation = "download")
+        # Raw exception for forensics: the mapped reason above is user-facing
+        # (e.g. a server 404 hides whether it is a bad slug, a private
+        # dataset, or a wrong-account key).  Never shown in the UI.
+        logger.warning("Kaggle download raw error for %s: %r", slug, exc)
         logger.warning("Kaggle download failed for %s -> %s: %s", slug, dest, reason)
         return (False, None, reason)
 

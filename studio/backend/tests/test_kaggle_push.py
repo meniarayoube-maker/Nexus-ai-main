@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from utils.paths.kaggle_push import (
+    _checkpoint_dir_step,
     _validate_dataset_slug,
     download_output_from_kaggle,
     push_output_to_kaggle,
@@ -524,6 +525,48 @@ def test_flat_output_dir_uploads_root_directly(monkeypatch, tmp_path):
     assert ok is True
     api = RealStyleApi.created[-1]
     assert api.calls[1][1] == str(run_dir)
+
+
+def test_checkpoint_step_sorts_numerically_not_lexicographically(tmp_path):
+    # Regression: lexicographic order reads checkpoint-5 as newer than
+    # checkpoint-19 ('5' > '1') and once shipped a stale bundle as "latest".
+    assert _checkpoint_dir_step(tmp_path / "checkpoint-5") == 5
+    assert _checkpoint_dir_step(tmp_path / "checkpoint-19") == 19
+    assert _checkpoint_dir_step(tmp_path / "checkpoint-100") == 100
+    assert _checkpoint_dir_step(tmp_path / "other") == -1
+    assert _checkpoint_dir_step(tmp_path / "checkpoint-abc") == -1
+
+
+def test_staging_keeps_numerically_latest_checkpoint(monkeypatch, tmp_path):
+    class StagingApi(RealStyleApi):
+        snapshots = []
+
+        def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="zip"):
+            self.calls.append(("create_new", folder, public, quiet, dir_mode))
+            root = Path(folder)
+            StagingApi.snapshots.append(
+                sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+            )
+
+    RealStyleApi.created.clear()
+    StagingApi.snapshots.clear()
+    _install_fake_kaggle(monkeypatch, StagingApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+    _write_checkpoint_bundle(run_dir / "checkpoint-5", 5)
+    _write_checkpoint_bundle(run_dir / "checkpoint-19", 19)
+    _write_checkpoint_bundle(run_dir / "checkpoint-100", 100)
+
+    ok, _url, error = push_output_to_kaggle(str(run_dir))
+
+    assert (ok, error) == (True, None)
+    snapshot = StagingApi.snapshots[-1]
+    assert "checkpoint-100/trainer_state.json" in snapshot
+    assert not any(entry.startswith("checkpoint-5/") for entry in snapshot)
+    assert not any(entry.startswith("checkpoint-19/") for entry in snapshot)
+    leftovers = [p for p in run_dir.parent.iterdir() if p.name.startswith(".upload-stage-")]
+    assert leftovers == []
 
 
 def test_disk_gate_measures_system_temp_not_source(monkeypatch, tmp_path):

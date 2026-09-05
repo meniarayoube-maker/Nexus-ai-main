@@ -41,6 +41,11 @@ from storage.studio_db import (
 )
 from utils.models.checkpoints import has_preview_model, preview_ref
 from utils.paths import outputs_root, resolve_output_dir
+from utils.paths.kaggle_push import (
+    _checkpoint_dir_step,
+    _validate_dataset_slug,
+    download_output_from_kaggle,
+)
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
 
@@ -531,11 +536,6 @@ async def restore_training_run_from_kaggle(
     """
     from storage.studio_db import create_run, finish_run, get_run
     from utils.paths import resolve_storage_target_write_dir, storage_target_override_root
-    from utils.paths.kaggle_push import (
-        _checkpoint_dir_step,
-        _validate_dataset_slug,
-        download_output_from_kaggle,
-    )
 
     slug = _validate_dataset_slug(payload.dataset)
     if slug is None:

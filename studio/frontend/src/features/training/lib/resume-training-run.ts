@@ -252,6 +252,29 @@ async function loadResumePayload(
   if (kaggleCfg.kaggleKey?.trim()) {
     payload.kaggle_key = kaggleCfg.kaggleKey.trim();
   }
+  // Storage destination is present-tense intent, not history: when the user
+  // explicitly selected a save destination in Configure, it wins over the
+  // stored row's original target (otherwise a resumed run silently uploads to
+  // the old destination while the UI shows the new one).
+  if (kaggleCfg.storageTarget) {
+    payload.storage_target = kaggleCfg.storageTarget;
+  }
+  if (payload.storage_target === "huggingface") {
+    const repoId = kaggleCfg.hfRepoId?.trim();
+    if (repoId) {
+      payload.hf_repo_id = repoId;
+    }
+    // Same rule as fresh starts: HF uploads are always private by design.
+    payload.hf_private = true;
+    const storeToken = kaggleCfg.hfToken?.trim();
+    if (storeToken) {
+      payload.hf_token = storeToken;
+    }
+  } else if (payload.storage_target === "kaggle") {
+    if (kaggleCfg.kagglePrivate !== null && kaggleCfg.kagglePrivate !== undefined) {
+      payload.kaggle_private = kaggleCfg.kagglePrivate;
+    }
+  }
   return payload;
 }
 

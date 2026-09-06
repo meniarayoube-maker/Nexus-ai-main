@@ -548,6 +548,62 @@ def _describe_error(exc: Exception, *, operation: str = "upload") -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _dataset_exists(api, slug: str) -> Optional[bool]:
+    """Check whether a dataset already exists.
+
+    ``slug`` must be the full ``owner/slug`` ref: the API lists full refs,
+    so probing with the bare slug name can never match (and would silently
+    disable the whole routing).  Drives explicit create-vs-version routing:
+    some client releases accept a create call for an existing slug as a
+    silent no-op (success logged, no new version), which no try/except can
+    detect.  Returns True / False, or None when the check itself is
+    inconclusive (unsupported client or failed call) -- callers then keep the
+    legacy try-create-first behavior.
+    """
+    import inspect
+
+    probe = getattr(api, "dataset_list", None)
+    if probe is None or not callable(probe):
+        return None
+    try:
+        params = inspect.signature(probe).parameters
+    except (TypeError, ValueError):
+        return None
+    search_key = next(
+        (key for key in ("search", "query", "filter", "dataset", "slug") if key in params),
+        None,
+    )
+    if search_key is None:
+        return None
+    try:
+        results = probe(**{search_key: slug})
+    except Exception:
+        return None
+    try:
+        if results is None:
+            return False
+        if isinstance(results, (list, tuple)):
+            items = results
+        else:
+            items = (
+                getattr(results, "datasets", None)
+                or getattr(results, "items", None)
+                or getattr(results, "results", None)
+                or []
+            )
+        wanted = str(slug).strip().lower()
+        for item in items or []:
+            if isinstance(item, dict):
+                ref = item.get("ref")
+            else:
+                ref = getattr(item, "ref", None)
+            if isinstance(ref, str) and ref.strip().lower() == wanted:
+                return True
+        return False
+    except Exception:
+        return None
+
+
 def push_output_to_kaggle(
     output_dir: "str | os.PathLike[str]",
     *,
@@ -656,31 +712,41 @@ def push_output_to_kaggle(
 
         # --- 5. Create or update the dataset ---
         # The real kaggle-api client takes only a folder (+ options); title, slug
-        # and visibility come from dataset-metadata.json written above.  When the
-        # dataset already exists the API raises; we catch that and fall back to
-        # ``dataset_create_version`` so re-runs don't break.
-        try:
-            _call_kaggle_api(
-                api,
-                "dataset_create_new",
-                str(upload_dir),
-                ("folder", "folder_path", "dir", "path", "dataset_dir"),
-                {
-                    "public": not is_private,
-                    "is_private": is_private,
-                    "private": is_private,
-                    "quiet": True,
-                    # Directories (notably checkpoint-*/) are SKIPPED by the
-                    # client's default dir_mode='skip'; 'zip' uploads them.
-                    "dir_mode": "zip",
-                },
+        # and visibility come from dataset-metadata.json written above.
+        # Routing is explicit, not exception-driven: some client releases
+        # accept create on an existing slug as a silent no-op (success logged,
+        # no new version), which no try/except can detect.  The legacy
+        # try-create-first fallback stays for inconclusive checks.
+        already_there = _dataset_exists(api, f"{owner}/{resolved_slug}")
+        if already_there is not True:
+            try:
+                _call_kaggle_api(
+                    api,
+                    "dataset_create_new",
+                    str(upload_dir),
+                    ("folder", "folder_path", "dir", "path", "dataset_dir"),
+                    {
+                        "public": not is_private,
+                        "is_private": is_private,
+                        "private": is_private,
+                        "quiet": True,
+                        # Directories (notably checkpoint-*/) are SKIPPED by the
+                        # client's default dir_mode='skip'; 'zip' uploads them.
+                        "dir_mode": "zip",
+                    },
+                )
+                logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
+                return (True, dataset_url, None)
+            except Exception as create_exc:  # noqa: BLE001
+                create_text = str(create_exc).lower()
+                if "already exists" not in create_text and "409" not in create_text:
+                    return (False, None, _describe_error(create_exc))
+        else:
+            logger.info(
+                "Kaggle dataset exists, creating a new version directly: %s -> %s",
+                root,
+                dataset_url,
             )
-            logger.info("Kaggle dataset created: %s -> %s", root, dataset_url)
-            return (True, dataset_url, None)
-        except Exception as create_exc:  # noqa: BLE001
-            create_text = str(create_exc).lower()
-            if "already exists" not in create_text and "409" not in create_text:
-                return (False, None, _describe_error(create_exc))
 
         # Dataset already exists: push a new version.
         try:

@@ -582,6 +582,119 @@ def test_flat_output_dir_uploads_root_directly(monkeypatch, tmp_path):
     assert api.calls[1][1] == str(run_dir)
 
 
+class ListableApi(RealStyleApi):
+    """Fake client exposing dataset_list (search by slug, ref-shaped rows)."""
+
+    listed_with = []
+    existing_refs = []
+
+    def dataset_list(self, search=None):
+        ListableApi.listed_with.append(search)
+        return [{"ref": ref} for ref in ListableApi.existing_refs]
+
+    def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="skip"):
+        raise AssertionError("create must not be called for an existing dataset")
+
+
+def test_existing_dataset_goes_straight_to_version(monkeypatch, tmp_path):
+    # Regression for the silent-no-op create: some client releases accept
+    # create on an existing slug as success without creating a version, which
+    # the old try/except fallback could not detect.  With an existence probe
+    # the version path is taken directly and create is never attempted.
+    RealStyleApi.created.clear()
+    ListableApi.existing_refs = ["testuser/my-run-123"]
+    ListableApi.listed_with.clear()
+    _install_fake_kaggle(monkeypatch, ListableApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    ok, url, error = push_output_to_kaggle(str(run_dir))
+
+    assert (ok, error) == (True, None)
+    assert url == "https://www.kaggle.com/datasets/testuser/my-run-123"
+    assert ListableApi.listed_with == ["testuser/my-run-123"]
+    api = RealStyleApi.created[-1]
+    kinds = [c[0] for c in api.calls]
+    assert "create_version" in kinds
+    assert "create_new" not in kinds
+
+
+def test_missing_dataset_goes_to_create(monkeypatch, tmp_path):
+    class MissingApi(ListableApi):
+        def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="skip"):
+            self.calls.append(("create_new", folder, public, quiet, dir_mode))
+
+    RealStyleApi.created.clear()
+    ListableApi.existing_refs = []
+    _install_fake_kaggle(monkeypatch, MissingApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    ok, url, error = push_output_to_kaggle(str(run_dir))
+
+    assert (ok, error) == (True, None)
+    api = RealStyleApi.created[-1]
+    kinds = [c[0] for c in api.calls]
+    assert "create_new" in kinds
+    assert "create_version" not in kinds
+
+
+def test_list_unsupported_or_failing_falls_back_to_legacy(monkeypatch, tmp_path):
+    # No dataset_list at all -> legacy try-create-first (existing behavior).
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, RealStyleApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+
+    first = tmp_path / "first"
+    first.mkdir()
+    ok, _url, error = push_output_to_kaggle(str(_make_run_dir(first)))
+    assert (ok, error) == (True, None)
+
+    # A raising list is equally inconclusive -> legacy path, still succeeds.
+    class FlakyListApi(ListableApi):
+        def dataset_list(self, search=None):
+            raise RuntimeError("search backend down")
+
+        def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="skip"):
+            self.calls.append(("create_new", folder, public, quiet, dir_mode))
+
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, FlakyListApi)
+    second = tmp_path / "second"
+    second.mkdir()
+    ok, _url, error = push_output_to_kaggle(str(_make_run_dir(second)))
+    assert (ok, error) == (True, None)
+    api = RealStyleApi.created[-1]
+    assert api.calls[1][0] == "create_new"
+
+
+def test_list_object_shape_with_datasets_attr(monkeypatch, tmp_path):
+    class ObjectListApi(ListableApi):
+        def dataset_list(self, search=None):
+            class _Result:
+                datasets = [{"ref": "testuser/my-run-123"}]
+
+            return _Result()
+
+        def dataset_create_new(self, folder, public=False, quiet=True, convert_to_csv=True, dir_mode="skip"):
+            raise AssertionError("create must not be called for an existing dataset")
+
+    RealStyleApi.created.clear()
+    _install_fake_kaggle(monkeypatch, ObjectListApi)
+    monkeypatch.setenv("KAGGLE_USERNAME", "testuser")
+    monkeypatch.setenv("KAGGLE_KEY", "testkey")
+    run_dir = _make_run_dir(tmp_path)
+
+    ok, url, error = push_output_to_kaggle(str(run_dir))
+
+    assert (ok, error) == (True, None)
+    api = RealStyleApi.created[-1]
+    assert [c[0] for c in api.calls].count("create_version") == 1
+
+
 def test_checkpoint_step_sorts_numerically_not_lexicographically(tmp_path):
     # Regression: lexicographic order reads checkpoint-5 as newer than
     # checkpoint-19 ('5' > '1') and once shipped a stale bundle as "latest".

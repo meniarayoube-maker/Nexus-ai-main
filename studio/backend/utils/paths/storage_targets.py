@@ -182,7 +182,19 @@ def resolve_storage_target_write_dir(
     if target == STORAGE_TARGET_KAGGLE:
         return _resolve_kaggle(output_dir, run_name)
     if target == STORAGE_TARGET_HUGGINGFACE:
-        # Stage under outputs_root; the push handler uploads from here.
+        # Stage under outputs_root; the push handler uploads from here.  But a
+        # resume continues inside its existing dir: honor an explicit absolute
+        # path under any ACTIVE cloud root as-is (same override rule as the
+        # Drive branch), so a restored run on Kaggle keeps training where its
+        # checkpoint lives instead of crashing on containment.
+        if output_dir and _is_absolute_user_path_str(output_dir):
+            user_path = Path(output_dir).expanduser()
+            for cloud_target in (STORAGE_TARGET_GOOGLE_DRIVE, STORAGE_TARGET_KAGGLE):
+                if storage_target_override_root(cloud_target) is not None and is_cloud_root(
+                    user_path, cloud_target
+                ):
+                    ensure_dir(user_path)
+                    return STORAGE_TARGET_HUGGINGFACE, user_path
         return STORAGE_TARGET_HUGGINGFACE, _resolve_contained(output_dir, run_name)
     # local
     return STORAGE_TARGET_LOCAL, _resolve_contained(output_dir, run_name)
@@ -291,7 +303,14 @@ def _resolve_contained(output_dir: Optional[str], run_name: str) -> Path:
         ensure_dir(resolved)
         return resolved
     cleaned = _clean_relative_path(raw)
-    candidate = outputs_root() / cleaned
+    from utils.paths.storage_roots import _assert_contained
+
+    root = outputs_root()
+    candidate = root / cleaned
+    # Same containment guarantee as resolve_under_root: a "relative" input can
+    # still be a rooted path on some platforms (e.g. ``\\kaggle\\...`` on
+    # Windows) whose join would otherwise escape the root.
+    _assert_contained(candidate, root)
     ensure_dir(candidate)
     return candidate
 

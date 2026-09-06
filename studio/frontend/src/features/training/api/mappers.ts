@@ -96,7 +96,10 @@ export function buildTrainingStartPayload(
     output_dir: getCustomOutputPath(),
     storage_target: config.storageTarget ?? undefined,
     hf_repo_id: config.hfRepoId?.trim() ? config.hfRepoId.trim() : null,
-    hf_private: config.hfPrivate ?? undefined,
+    // Privacy is fixed to private by design (no toggle): uploads can never
+    // go public from this UI. The backend still rejects an unset value from
+    // direct API callers (fail-closed).
+    hf_private: true,
     kaggle_private: config.kagglePrivate ?? undefined,
     kaggle_username: config.kaggleUsername?.trim() ? config.kaggleUsername.trim() : null,
     kaggle_key: config.kaggleKey?.trim() ? config.kaggleKey.trim() : null,

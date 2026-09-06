@@ -57,7 +57,6 @@ export function ParamsSection({
       projectName: state.projectName,
       storageTarget: state.storageTarget,
       hfRepoId: state.hfRepoId,
-      hfPrivate: state.hfPrivate,
       hfToken: state.hfToken,
       kagglePrivate: state.kagglePrivate,
       kaggleUsername: state.kaggleUsername,
@@ -72,7 +71,6 @@ export function ParamsSection({
       setProjectName: state.setProjectName,
       setStorageTarget: state.setStorageTarget,
       setHfRepoId: state.setHfRepoId,
-      setHfPrivate: state.setHfPrivate,
       setHfToken: state.setHfToken,
       setKagglePrivate: state.setKagglePrivate,
       setKaggleUsername: state.setKaggleUsername,
@@ -305,21 +303,9 @@ export function ParamsSection({
             </div>
             {store.storageTarget === "huggingface" && (
               <div className="flex flex-col gap-2 rounded-md border border-border p-2.5 animate-in fade-in-0 slide-in-from-bottom-1 duration-200">
-                <label className="flex cursor-pointer items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    {t("studio.params.hfPrivate")}
-                    <FieldHint
-                      text={t("studio.params.hfPrivateDescription")}
-                      label={t("studio.params.hfPrivate")}
-                    />
-                  </span>
-                  <Switch
-                    checked={store.hfPrivate ?? true}
-                    onCheckedChange={(checked) =>
-                      store.setHfPrivate(checked)
-                    }
-                  />
-                </label>
+                <p className="text-xs text-muted-foreground">
+                  {t("studio.params.hfAlwaysPrivate")}
+                </p>
                 <Input
                   value={store.hfRepoId || ""}
                   onChange={(event) => store.setHfRepoId(event.target.value)}

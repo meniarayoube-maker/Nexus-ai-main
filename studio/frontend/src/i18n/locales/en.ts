@@ -2076,9 +2076,8 @@ export const en = {
       storageTargetGoogleDrive: "Google Drive",
       storageTargetHuggingFace: "Hugging Face",
       storageTargetKaggle: "Kaggle",
-      hfPrivate: "Keep Hugging Face repo private",
-      hfPrivateDescription:
-        "Required choice: when enabled, the uploaded repo is only visible to you. Disable to publish it publicly. Uploads never default to public.",
+      hfAlwaysPrivate:
+        "Uploads always go to a private Hugging Face repo. To publish publicly, change the repo visibility on huggingface.co afterwards.",
       hfToken: "HF Token",
       hfTokenDescription:
         "Optional per-run override. Falls back to the saved HF token, then the HF_TOKEN environment variable.",

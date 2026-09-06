@@ -129,7 +129,7 @@ def push_output_to_huggingface(
     repo_id: str,
     *,
     hf_token: Optional[str] = None,
-    private: bool = False,
+    private: Optional[bool] = None,
     commit_message: Optional[str] = None,
 ) -> PushResult:
     """Upload ``output_dir`` to the Hugging Face repo ``repo_id``.
@@ -139,6 +139,12 @@ def push_output_to_huggingface(
       - ``(False, None, reason)``   on a genuine failure, with a precise message.
       - ``(False, None, None)``     when skipped (no repo id / no output dir).
 
+    Privacy is fail-closed: ``private=None`` (no explicit choice) refuses the
+    upload before any file leaves the machine.  An existing repo whose
+    visibility differs from the request is likewise refused, because
+    ``create_repo(..., exist_ok=True)`` does NOT flip an existing repo's
+    visibility.
+
     Callers should surface ``error`` to the UI but never treat a failure as fatal
     (artifacts already live on disk).
     """
@@ -146,6 +152,14 @@ def push_output_to_huggingface(
         logger.warning("HF push skipped: no hf_repo_id provided for huggingface storage target")
         return (False, None, None)
     repo_id = str(repo_id).strip()
+
+    if private is None:
+        reason = (
+            "Hugging Face privacy choice is required: choose Private or Public "
+            "before uploading. Uploads never default to public."
+        )
+        logger.warning("HF push refused for %s: %s", repo_id, reason)
+        return (False, None, reason)
 
     root = Path(output_dir).expanduser()
     if not root.is_dir():
@@ -169,6 +183,7 @@ def push_output_to_huggingface(
 
     try:
         api = HfApi(token=token)
+        _enforce_repo_visibility(api, repo_id, private=private, token=token)
         created = api.create_repo(repo_id, private=private, exist_ok=True, token=token)
         resolved_repo_id = created.repo_id if created is not None else repo_id
         api.upload_folder(
@@ -185,3 +200,44 @@ def push_output_to_huggingface(
     repo_url = f"https://huggingface.co/{resolved_repo_id}"
     logger.info("HF push complete: %s -> %s", root, repo_url)
     return (True, repo_url, None)
+
+
+def _enforce_repo_visibility(api, repo_id: str, *, private: bool, token) -> None:
+    """Fail fast when an existing repo's visibility differs from ``private``.
+
+    ``create_repo(..., exist_ok=True)`` silently keeps an existing repo's
+    visibility, so without this check a private-requested upload could land in
+    a public repo (or vice versa).  Missing repos (404) pass through to be
+    created; unreadable visibility passes with a warning (fail-open only on
+    uncertainty, never on a known mismatch).  Raises RuntimeError on mismatch
+    or auth errors so the caller maps it precisely.
+    """
+    try:
+        info = api.repo_info(repo_id, token=token)
+    except Exception as exc:  # noqa: BLE001 - missing repo, auth, or client failure.
+        try:
+            from huggingface_hub.errors import HfHubHTTPError
+        except Exception:
+            HfHubHTTPError = None  # type: ignore[assignment]
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if HfHubHTTPError is not None and isinstance(exc, HfHubHTTPError) and status == 404:
+            return  # Does not exist yet: create_repo will apply `private`.
+        if HfHubHTTPError is not None and isinstance(exc, HfHubHTTPError) and status in (401, 403):
+            raise RuntimeError(
+                "Hugging Face authentication failed -- the token is missing, "
+                "invalid, or lacks access to this repo."
+            )
+        logger.warning("HF visibility check inconclusive for %s: %s", repo_id, exc)
+        return
+    actual = getattr(info, "private", None)
+    if actual is None:
+        logger.warning("HF visibility unreadable for %s; proceeding.", repo_id)
+        return
+    if bool(actual) != bool(private):
+        have = "public" if not actual else "private"
+        want = "private" if private else "public"
+        raise RuntimeError(
+            f"Hugging Face repo {repo_id} already exists as {have}, but {want} "
+            "was requested. Change one of them explicitly and retry -- the "
+            "upload was refused before any file left this machine."
+        )

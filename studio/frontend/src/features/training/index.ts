@@ -70,6 +70,7 @@ export {
   deleteTrainingRun,
   renameTrainingRun,
   restoreTrainingRunFromKaggle,
+  restoreTrainingRunFromHuggingFace,
   HistoryRequestError,
 } from "./api/history-api";
 export {

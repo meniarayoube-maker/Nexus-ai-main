@@ -527,25 +527,53 @@ async def restore_training_run_from_kaggle(
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
 ):
-    """Download a finished run's Kaggle dataset and register it in history.
+    """Download a finished run's artifacts and register it in history.
 
-    Covers the new-session case: ``/kaggle/working`` is gone, but the dataset
-    survives on kaggle.com. The artifacts land under the active write root
+    Source is either a Kaggle dataset (``dataset``) or a Hugging Face repo
+    (``hf_repo_id`` + optional ``hf_revision``) -- exactly one is required.
+    Covers the new-session case: local outputs are gone, but the remote copy
+    survives.  The artifacts land under the active write root
     (``/kaggle/working/unsloth-outputs`` on Kaggle, local outputs elsewhere)
     and the new row is resumable whenever the checkpoint state is intact.
+    Everything past the download (gates, facts, row) is source-agnostic.
     """
     from storage.studio_db import create_run, finish_run, get_run
     from utils.paths import resolve_storage_target_write_dir, storage_target_override_root
+    from utils.paths.hf_pull import _validate_repo_id, download_output_from_huggingface
 
-    slug = _validate_dataset_slug(payload.dataset)
-    if slug is None:
+    use_hf = bool((payload.hf_repo_id or "").strip())
+    use_kaggle = bool((payload.dataset or "").strip())
+    if use_hf == use_kaggle:
         raise HTTPException(
             status_code = 422,
             detail = {
-                "code": "training_restore_bad_dataset",
-                "message": "Expected a Kaggle dataset 'owner/slug'.",
+                "code": "training_restore_bad_source",
+                "message": "Provide exactly one of a Kaggle dataset 'owner/slug' or a Hugging Face repo 'owner/name'.",
             },
         )
+    source = "huggingface" if use_hf else "kaggle"
+    if use_hf:
+        slug = _validate_repo_id(payload.hf_repo_id)
+        if slug is None:
+            raise HTTPException(
+                status_code = 422,
+                detail = {
+                    "code": "training_restore_bad_dataset",
+                    "message": "Expected a Hugging Face repo 'owner/name'.",
+                },
+            )
+        revision = (payload.hf_revision or "").strip() or None
+    else:
+        slug = _validate_dataset_slug(payload.dataset)
+        if slug is None:
+            raise HTTPException(
+                status_code = 422,
+                detail = {
+                    "code": "training_restore_bad_dataset",
+                    "message": "Expected a Kaggle dataset 'owner/slug'.",
+                },
+            )
+        revision = None
     _owner, name = slug.split("/")
     run_name = _safe_restore_run_name(payload.run_name, name)
     target = "kaggle" if storage_target_override_root("kaggle") is not None else "local"
@@ -585,19 +613,30 @@ async def restore_training_run_from_kaggle(
                 },
             )
     if need_download:
-        ok, _path, error = await asyncio.to_thread(
-            download_output_from_kaggle,
-            slug,
-            str(dest_path),
-            username = payload.kaggle_username,
-            key = payload.kaggle_key,
-        )
+        if use_hf:
+            ok, _path, error = await asyncio.to_thread(
+                download_output_from_huggingface,
+                slug,
+                str(dest_path),
+                revision = revision,
+                hf_token = payload.hf_token,
+            )
+            download_failed_message = error or "Hugging Face download failed."
+        else:
+            ok, _path, error = await asyncio.to_thread(
+                download_output_from_kaggle,
+                slug,
+                str(dest_path),
+                username = payload.kaggle_username,
+                key = payload.kaggle_key,
+            )
+            download_failed_message = error or "Kaggle download failed."
         if not ok:
             raise HTTPException(
                 status_code = 502,
                 detail = {
                     "code": "training_restore_download_failed",
-                    "message": error or "Kaggle download failed.",
+                    "message": download_failed_message,
                 },
             )
     usable = await asyncio.to_thread(has_resume_state, str(dest_path))
@@ -627,8 +666,10 @@ async def restore_training_run_from_kaggle(
         manual_hf_dataset = manual_hf_dataset,
         slug = slug,
         storage_target = target,
+        source = "huggingface" if use_hf else "kaggle",
     )
     model_name = str(config["model_name"])
+    dataset_label = f"huggingface:{slug}" if use_hf else f"kaggle:{slug}"
     now = datetime.now(timezone.utc).isoformat()
     run_id = f"restored_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     try:
@@ -636,7 +677,7 @@ async def restore_training_run_from_kaggle(
             create_run,
             run_id,
             model_name,
-            f"kaggle:{slug}",
+            dataset_label,
             json.dumps(config),
             now,
             None,

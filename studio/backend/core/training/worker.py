@@ -2729,7 +2729,9 @@ def _maybe_push_hf_output(output_dir: "str | None", config: dict) -> dict:
             output_dir,
             repo_id,
             hf_token=config.get("hf_token") or None,
-            private=bool(config.get("hf_private")),
+            # Pass through raw (None stays None): the helper fail-closes on
+            # an unset choice instead of silently defaulting to public.
+            private=config.get("hf_private"),
         )
     except Exception as exc:  # noqa: BLE001 - structural failure; surface it, don't crush the run.
         message = f"Hugging Face upload failed unexpectedly: {exc}"

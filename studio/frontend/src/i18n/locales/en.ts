@@ -2076,6 +2076,12 @@ export const en = {
       storageTargetGoogleDrive: "Google Drive",
       storageTargetHuggingFace: "Hugging Face",
       storageTargetKaggle: "Kaggle",
+      hfPrivate: "Keep Hugging Face repo private",
+      hfPrivateDescription:
+        "Required choice: when enabled, the uploaded repo is only visible to you. Disable to publish it publicly. Uploads never default to public.",
+      hfToken: "HF Token",
+      hfTokenDescription:
+        "Optional per-run override. Falls back to the saved HF token, then the HF_TOKEN environment variable.",
       kagglePrivate: "Keep Kaggle dataset private",
       kagglePrivateDescription:
         "When enabled (default), the uploaded dataset is only visible to you. Disable to publish it publicly.",
@@ -2097,6 +2103,14 @@ export const en = {
         "Run name (optional -- change it if the folder already exists)",
       kaggleRestoreButton: "Restore from Kaggle",
       kaggleRestoreBusy: "Restoring...",
+      hfRestoreRepo: "Restore repo",
+      hfRestoreRepoPlaceholder: "owner/model-name",
+      hfRestoreRepoDescription:
+        "Download a finished run's Hugging Face repo into this machine and register it in history, using the token above.",
+      hfRestoreRevisionPlaceholder:
+        "Revision: branch, tag, or commit SHA (optional -- defaults to the default branch)",
+      hfRestoreButton: "Restore from Hugging Face",
+      hfRestoreBusy: "Restoring...",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",
@@ -2316,11 +2330,17 @@ export const en = {
       previewLinkCopied: "Preview link copied",
       previewLinkCopyFailed: "Couldn't copy the link",
       restoreFromKaggle: "Restore from Kaggle",
-      restoreTitle: "Restore training run from Kaggle",
+      restoreTitle: "Restore training run",
       restoreDescription:
-        "Download a finished run's Kaggle dataset (owner/slug) into this machine and register it in history so it can be resumed.",
+        "Download a finished run's artifacts -- a Kaggle dataset (owner/slug) or a Hugging Face repo (owner/name) -- into this machine and register it in history so it can be resumed.",
       restoreDatasetLabel: "Kaggle dataset",
       restoreDatasetPlaceholder: "owner/dataset-slug",
+      restoreHfRepoLabel: "Hugging Face repo (alternative)",
+      restoreHfRepoPlaceholder: "owner/model-name",
+      restoreHfRevisionLabel: "Hub revision (optional)",
+      restoreHfRevisionPlaceholder: "branch, tag, or commit SHA -- defaults to the default branch",
+      restoreHfTokenLabel: "Hugging Face token (optional)",
+      restoreHfTokenPlaceholder: "Needed for private or gated repos",
       restoreRunNameLabel: "Run name (optional)",
       restoreRunNamePlaceholder: "Defaults to the dataset slug",
       restoreHfDatasetLabel: "Original training dataset (optional)",
@@ -2330,6 +2350,8 @@ export const en = {
       restoreRestoring: "Restoring...",
       restoreSuccess: "Training run restored from Kaggle",
       restoreError: "Failed to restore from Kaggle. Please try again.",
+      restoreHfSuccess: "Training run restored from Hugging Face",
+      restoreHfError: "Failed to restore from Hugging Face. Please try again.",
     },
     charts: {
       settings: "Chart Settings",

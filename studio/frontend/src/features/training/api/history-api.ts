@@ -140,3 +140,29 @@ export async function restoreTrainingRunFromKaggle(
   });
   return parseJson<TrainingRunSummary>(response);
 }
+
+export async function restoreTrainingRunFromHuggingFace(
+  repoId: string,
+  options?: {
+    runName?: string | null;
+    revision?: string | null;
+    hfDataset?: string | null;
+    hfToken?: string | null;
+    signal?: AbortSignal;
+  },
+): Promise<TrainingRunSummary> {
+  const response = await authFetch(`/api/train/runs/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      dataset: null,
+      hf_repo_id: repoId.trim(),
+      hf_revision: options?.revision?.trim() || null,
+      run_name: options?.runName?.trim() || null,
+      hf_dataset: options?.hfDataset?.trim() || null,
+      hf_token: options?.hfToken?.trim() || null,
+    }),
+    signal: options?.signal,
+  });
+  return parseJson<TrainingRunSummary>(response);
+}

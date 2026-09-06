@@ -2376,6 +2376,8 @@ def _train_dit(
                     out_dir,
                     cfg.hf_repo_id,
                     hf_token=getattr(cfg, "hf_token", None) or None,
+                    # Fail-closed like the LLM path: no silent public default.
+                    private=getattr(cfg, "hf_private", None),
                 )
             except Exception as exc:  # noqa: BLE001 -- adapter already saved locally
                 _repo_url = None

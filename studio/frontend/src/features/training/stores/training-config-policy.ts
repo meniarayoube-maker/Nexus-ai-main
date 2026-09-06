@@ -62,6 +62,8 @@ export const initialTrainingConfigState: TrainingConfigState = {
   projectName: "",
   storageTarget: null,
   hfRepoId: null,
+  hfPrivate: null,
+  hfToken: null,
   kagglePrivate: null,
   kaggleUsername: null,
   kaggleKey: null,

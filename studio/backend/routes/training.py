@@ -1497,6 +1497,7 @@ async def start_training(
             "output_dir": resume_output_dir or ((request.output_dir or "").strip() or None),
             "storage_target": ((request.storage_target or "").strip() or "") or None,
             "hf_repo_id": ((request.hf_repo_id or "").strip() or None),
+            "hf_private": request.hf_private,
             "kaggle_private": request.kaggle_private,
             "kaggle_username": (request.kaggle_username or "").strip() or None,
             "kaggle_key": (request.kaggle_key or "").strip() or None,
@@ -1511,6 +1512,30 @@ async def start_training(
             "gpu_ids": request.gpu_ids,
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
+
+        # Fail closed on Hugging Face privacy: an unset choice must never
+        # silently become a public upload.  The worker/upload helper enforces
+        # the same rule again at push time (defense in depth).
+        if (training_kwargs.get("storage_target") or "") == "huggingface":
+            if training_kwargs.get("hf_private") is None:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = {
+                        "code": "training_hf_privacy_required",
+                        "message": (
+                            "Choose Private or Public for the Hugging Face repo "
+                            "before starting: uploads never default to public."
+                        ),
+                    },
+                )
+            if not training_kwargs.get("hf_repo_id"):
+                raise HTTPException(
+                    status_code = 422,
+                    detail = {
+                        "code": "training_hf_repo_required",
+                        "message": "A Hugging Face repo id is required for the huggingface save destination.",
+                    },
+                )
 
         # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled
         from core.training.provenance import (

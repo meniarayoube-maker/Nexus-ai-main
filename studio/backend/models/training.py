@@ -140,6 +140,14 @@ class TrainingStartRequest(BaseModel):
             "upload pushes the training output there."
         ),
     )
+    hf_private: Optional[bool] = Field(
+        None,
+        description = (
+            "REQUIRED when storage_target is 'huggingface': True keeps the repo "
+            "private, False makes it public.  None refuses the upload -- there is "
+            "no silent default to public."
+        ),
+    )
     start_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -854,7 +862,18 @@ class TrainingRunRestoreRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    dataset: str = Field(..., description = "Kaggle dataset 'owner/slug' to download and register")
+    dataset: Optional[str] = Field(
+        None, description = "Kaggle dataset 'owner/slug' to download and register (exactly one of dataset / hf_repo_id)"
+    )
+    hf_repo_id: Optional[str] = Field(
+        None, description = "Hugging Face repo 'owner/name' to download and register (alternative to dataset)"
+    )
+    hf_revision: Optional[str] = Field(
+        None, description = "Hub revision (branch, tag, or commit SHA) to restore; defaults to the repo default branch"
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "Hugging Face token for private/gated repos (never stored)"
+    )
     run_name: Optional[str] = Field(
         None, description = "Output directory name; defaults to the dataset slug"
     )

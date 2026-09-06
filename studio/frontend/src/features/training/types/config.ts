@@ -67,6 +67,10 @@ export interface TrainingConfigState {
   storageTarget: "local" | "google_drive" | "huggingface" | "kaggle" | null;
   /** Hugging Face repo id used when storageTarget === "huggingface". */
   hfRepoId: string | null;
+  /** Hugging Face repo privacy: true = private, false = public, null = undecided (upload refused). */
+  hfPrivate: boolean | null;
+  /** Hugging Face token override (UI input). Falls back to the saved HF token, then HF_TOKEN env var. */
+  hfToken: string | null;
   /** Kaggle dataset privacy: true = private (default), false = public. */
   kagglePrivate: boolean | null;
   /** Kaggle username override (UI input). Falls back to KAGGLE_USERNAME env var. */
@@ -204,6 +208,8 @@ export interface TrainingConfigActions {
     value: "local" | "google_drive" | "huggingface" | "kaggle" | null,
   ) => void;
   setHfRepoId: (value: string) => void;
+  setHfPrivate: (value: boolean | null) => void;
+  setHfToken: (value: string) => void;
   setKagglePrivate: (value: boolean | null) => void;
   setKaggleUsername: (value: string) => void;
   setKaggleKey: (value: string) => void;

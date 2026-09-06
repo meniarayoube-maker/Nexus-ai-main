@@ -26,18 +26,21 @@ def test_sanitize_drops_secrets_case_insensitively():
             "kaggle_username": "walzoomtech",
             "approved_remote_code_fingerprint": "abc123",
             "max_steps": 30,
+            "hf_private": True,
         }
     )
     assert cleaned["model_name"] == "unsloth/qwen2.5-0.5b"
     assert cleaned["kaggle_username"] == "walzoomtech"
     assert cleaned["approved_remote_code_fingerprint"] == "abc123"
     assert cleaned["max_steps"] == 30
+    # Privacy flags are not secrets: kept so resumed runs re-upload correctly.
+    assert cleaned["hf_private"] is True
     for key in cleaned:
         lowered = key.lower()
         assert "token" not in lowered
         assert "secret" not in lowered
         assert "password" not in lowered
-        assert key != "KAGGLE_KEY"
+        assert key not in ("KAGGLE_KEY", "kaggle_key")
 
 
 def test_sanitize_coerces_unserializable_values():

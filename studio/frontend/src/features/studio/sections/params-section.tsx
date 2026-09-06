@@ -21,6 +21,7 @@ import { CONTEXT_LENGTHS } from "@/config/training";
 import {
   HistoryRequestError,
   emitTrainingRunsChanged,
+  restoreTrainingRunFromHuggingFace,
   restoreTrainingRunFromKaggle,
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
@@ -56,6 +57,8 @@ export function ParamsSection({
       projectName: state.projectName,
       storageTarget: state.storageTarget,
       hfRepoId: state.hfRepoId,
+      hfPrivate: state.hfPrivate,
+      hfToken: state.hfToken,
       kagglePrivate: state.kagglePrivate,
       kaggleUsername: state.kaggleUsername,
       kaggleKey: state.kaggleKey,
@@ -69,6 +72,8 @@ export function ParamsSection({
       setProjectName: state.setProjectName,
       setStorageTarget: state.setStorageTarget,
       setHfRepoId: state.setHfRepoId,
+      setHfPrivate: state.setHfPrivate,
+      setHfToken: state.setHfToken,
       setKagglePrivate: state.setKagglePrivate,
       setKaggleUsername: state.setKaggleUsername,
       setKaggleKey: state.setKaggleKey,
@@ -121,6 +126,10 @@ export function ParamsSection({
   const [restoreDataset, setRestoreDataset] = useState("");
   const [restoreHfDataset, setRestoreHfDataset] = useState("");
   const [restoreRunName, setRestoreRunName] = useState("");
+  // Restore-from-HuggingFace form (repo/revision local; run name + training
+  // dataset inputs are shared with the Kaggle form above).
+  const [restoreHfRepoId, setRestoreHfRepoId] = useState("");
+  const [restoreHfRevision, setRestoreHfRevision] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState<{
     ok: boolean;
@@ -153,6 +162,40 @@ export function ParamsSection({
         setRestoreMessage({
           ok: false,
           text: translate("studio.history.restoreError"),
+        });
+      }
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
+
+  const handleHuggingFaceRestore = async () => {
+    const repoId = restoreHfRepoId.trim();
+    if (!repoId || restoreBusy) return;
+    setRestoreBusy(true);
+    setRestoreMessage(null);
+    try {
+      await restoreTrainingRunFromHuggingFace(repoId, {
+        runName: restoreRunName.trim() || null,
+        revision: restoreHfRevision.trim() || null,
+        hfDataset: restoreHfDataset.trim() || null,
+        hfToken: store.hfToken?.trim() || null,
+      });
+      setRestoreHfRepoId("");
+      setRestoreHfRevision("");
+      setRestoreRunName("");
+      setRestoreMessage({
+        ok: true,
+        text: translate("studio.history.restoreHfSuccess"),
+      });
+      emitTrainingRunsChanged();
+    } catch (err) {
+      if (err instanceof HistoryRequestError && err.message) {
+        setRestoreMessage({ ok: false, text: err.message });
+      } else {
+        setRestoreMessage({
+          ok: false,
+          text: translate("studio.history.restoreHfError"),
         });
       }
     } finally {
@@ -261,12 +304,99 @@ export function ParamsSection({
               ))}
             </div>
             {store.storageTarget === "huggingface" && (
-              <Input
-                value={store.hfRepoId || ""}
-                onChange={(event) => store.setHfRepoId(event.target.value)}
-                placeholder="my-org/my-model"
-                maxLength={120}
-              />
+              <div className="flex flex-col gap-2 rounded-md border border-border p-2.5 animate-in fade-in-0 slide-in-from-bottom-1 duration-200">
+                <label className="flex cursor-pointer items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    {t("studio.params.hfPrivate")}
+                    <FieldHint
+                      text={t("studio.params.hfPrivateDescription")}
+                      label={t("studio.params.hfPrivate")}
+                    />
+                  </span>
+                  <Switch
+                    checked={store.hfPrivate ?? true}
+                    onCheckedChange={(checked) =>
+                      store.setHfPrivate(checked)
+                    }
+                  />
+                </label>
+                <Input
+                  value={store.hfRepoId || ""}
+                  onChange={(event) => store.setHfRepoId(event.target.value)}
+                  placeholder="my-org/my-model"
+                  maxLength={120}
+                />
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      {t("studio.params.hfToken")}
+                      <span className="font-normal text-muted-foreground/70">
+                        {t("studio.params.optional")}
+                      </span>
+                      <FieldHint
+                        text={t("studio.params.hfTokenDescription")}
+                        label={t("studio.params.hfToken")}
+                      />
+                    </span>
+                  </label>
+                  <Input
+                    type="password"
+                    value={store.hfToken || ""}
+                    onChange={(event) => store.setHfToken(event.target.value)}
+                    placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxx"
+                    autoComplete="off"
+                    maxLength={255}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5 border-t border-border pt-2.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      {t("studio.params.hfRestoreRepo")}
+                      <FieldHint
+                        text={t("studio.params.hfRestoreRepoDescription")}
+                        label={t("studio.params.hfRestoreRepo")}
+                      />
+                    </span>
+                  </label>
+                  <Input
+                    value={restoreHfRepoId}
+                    onChange={(event) => setRestoreHfRepoId(event.target.value)}
+                    placeholder={t("studio.params.hfRestoreRepoPlaceholder")}
+                    autoComplete="off"
+                    maxLength={160}
+                    disabled={restoreBusy}
+                  />
+                  <Input
+                    value={restoreHfRevision}
+                    onChange={(event) => setRestoreHfRevision(event.target.value)}
+                    placeholder={t("studio.params.hfRestoreRevisionPlaceholder")}
+                    autoComplete="off"
+                    maxLength={160}
+                    disabled={restoreBusy || !restoreHfRepoId.trim()}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleHuggingFaceRestore()}
+                    disabled={restoreBusy || !restoreHfRepoId.trim()}
+                    className="rounded-md border border-primary bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {restoreBusy
+                      ? t("studio.params.hfRestoreBusy")
+                      : t("studio.params.hfRestoreButton")}
+                  </button>
+                  {restoreMessage && (
+                    <p
+                      className={
+                        restoreMessage.ok
+                          ? "text-xs text-emerald-600 dark:text-emerald-400"
+                          : "text-xs text-destructive"
+                      }
+                    >
+                      {restoreMessage.text}
+                    </p>
+                  )}
+                </div>
+              </div>
             )}
             {store.storageTarget === "kaggle" && (
               <div className="flex flex-col gap-2 rounded-md border border-border p-2.5 animate-in fade-in-0 slide-in-from-bottom-1 duration-200">

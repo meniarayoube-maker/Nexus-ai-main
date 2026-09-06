@@ -128,6 +128,7 @@ def build_restored_config(
     manual_hf_dataset: Optional[str],
     slug: str,
     storage_target: str,
+    source: str = "kaggle",
 ) -> dict:
     """Build the history-row config for a restored run.
 
@@ -135,7 +136,8 @@ def build_restored_config(
     speaks; inference (adapter/base scan) and manual fields only fill gaps.
     Run-specific keys (stale output paths, request ids) are scrubbed so a
     resumed start can never write into -- or resume from -- the dead session's
-    paths.
+    paths.  ``source`` selects the provenance marker (``restored_from_kaggle``
+    or ``restored_from_hf``).
     """
     base = dict(file_config) if isinstance(file_config, dict) else {}
     for stale in _RUN_SPECIFIC_KEYS | _SESSION_BOUND_KEYS:
@@ -151,6 +153,6 @@ def build_restored_config(
             base["hf_dataset"] = manual_hf_dataset
         else:
             base.pop("hf_dataset", None)
-    base["restored_from_kaggle"] = slug
+    base[f"restored_from_{source}"] = slug
     base["storage_target"] = storage_target
     return base

@@ -37,6 +37,7 @@ import {
   onTrainingRunUpdated,
   onTrainingRunsChanged,
   restoreTrainingRunFromKaggle,
+  restoreTrainingRunFromHuggingFace,
   shouldShowTrainingArtifactsDeleted,
   useTrainingActions,
 } from "@/features/training";
@@ -262,6 +263,9 @@ export function HistoryCardGrid({
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoreDataset, setRestoreDataset] = useState("");
+const [restoreHfRepoId, setRestoreHfRepoId] = useState("");
+const [restoreHfRevision, setRestoreHfRevision] = useState("");
+const [restoreHfToken, setRestoreHfToken] = useState("");
   const [restoreRunName, setRestoreRunName] = useState("");
   const [restoreHfDataset, setRestoreHfDataset] = useState("");
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -427,6 +431,9 @@ export function HistoryCardGrid({
 
   const openRestore = () => {
     setRestoreDataset("");
+    setRestoreHfRepoId("");
+    setRestoreHfRevision("");
+    setRestoreHfToken("");
     setRestoreRunName("");
     setRestoreHfDataset("");
     setRestoreError(null);
@@ -435,18 +442,31 @@ export function HistoryCardGrid({
 
   const handleRestore = async () => {
     const dataset = restoreDataset.trim();
-    if (!dataset || restoreBusy) return;
+    const hfRepo = restoreHfRepoId.trim();
+    // Exactly one source, mirroring the backend's 422 contract.
+    if ((!dataset && !hfRepo) || (dataset && hfRepo) || restoreBusy) return;
     setRestoreBusy(true);
     setRestoreError(null);
     try {
-      await restoreTrainingRunFromKaggle(
-        dataset,
-        restoreRunName.trim() || null,
-        undefined,
-        { hfDataset: restoreHfDataset },
-      );
-      setRestoreOpen(false);
-      toast.success(translate("studio.history.restoreSuccess"));
+      if (hfRepo) {
+        await restoreTrainingRunFromHuggingFace(hfRepo, {
+          runName: restoreRunName.trim() || null,
+          revision: restoreHfRevision.trim() || null,
+          hfDataset: restoreHfDataset.trim() || null,
+          hfToken: restoreHfToken.trim() || null,
+        });
+        setRestoreOpen(false);
+        toast.success(translate("studio.history.restoreHfSuccess"));
+      } else {
+        await restoreTrainingRunFromKaggle(
+          dataset,
+          restoreRunName.trim() || null,
+          undefined,
+          { hfDataset: restoreHfDataset.trim() || null },
+        );
+        setRestoreOpen(false);
+        toast.success(translate("studio.history.restoreSuccess"));
+      }
       // Refresh preserving visible count so "Load more" offsets stay consistent.
       const limit = Math.max(PAGE_SIZE, runsLengthRef.current);
       fetchRuns(0, false, limit).catch(() => {
@@ -455,6 +475,8 @@ export function HistoryCardGrid({
     } catch (err) {
       if (err instanceof HistoryRequestError && err.message) {
         setRestoreError(err.message);
+      } else if (hfRepo) {
+        setRestoreError(translate("studio.history.restoreHfError"));
       } else {
         setRestoreError(translate("studio.history.restoreError"));
       }
@@ -824,6 +846,43 @@ export function HistoryCardGrid({
             </label>
             <label className="flex flex-col gap-1.5 text-sm">
               <span className="font-medium">
+                {t("studio.history.restoreHfRepoLabel")}
+              </span>
+              <Input
+                value={restoreHfRepoId}
+                onChange={(event) => setRestoreHfRepoId(event.target.value)}
+                placeholder={t("studio.history.restoreHfRepoPlaceholder")}
+                disabled={restoreBusy}
+              />
+            </label>
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">
+                {t("studio.history.restoreHfRevisionLabel")}
+              </span>
+              <Input
+                value={restoreHfRevision}
+                onChange={(event) => setRestoreHfRevision(event.target.value)}
+                placeholder={t("studio.history.restoreHfRevisionPlaceholder")}
+                disabled={restoreBusy || !restoreHfRepoId.trim()}
+              />
+            </label>
+            {restoreHfRepoId.trim() && (
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="font-medium">
+                  {t("studio.history.restoreHfTokenLabel")}
+                </span>
+                <Input
+                  type="password"
+                  value={restoreHfToken}
+                  onChange={(event) => setRestoreHfToken(event.target.value)}
+                  placeholder={t("studio.history.restoreHfTokenPlaceholder")}
+                  autoComplete="off"
+                  disabled={restoreBusy}
+                />
+              </label>
+            )}
+            <label className="flex flex-col gap-1.5 text-sm">
+              <span className="font-medium">
                 {t("studio.history.restoreRunNameLabel")}
               </span>
               <Input
@@ -858,7 +917,11 @@ export function HistoryCardGrid({
             </Button>
             <Button
               onClick={() => void handleRestore()}
-              disabled={restoreBusy || !restoreDataset.trim()}
+              disabled={
+                restoreBusy ||
+                (!restoreDataset.trim() && !restoreHfRepoId.trim()) ||
+                (Boolean(restoreDataset.trim()) && Boolean(restoreHfRepoId.trim()))
+              }
             >
               {restoreBusy
                 ? t("studio.history.restoreRestoring")

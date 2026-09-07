@@ -111,35 +111,62 @@ def _select_sparse_patterns(
     """Pick the sparse-restore file set from ``repo_info`` siblings.
 
     Returns ``(patterns, newest_step, omitted_count, omitted_bytes)`` where
-    ``patterns`` holds exact repo-relative paths: every root-level file plus
-    everything under the numerically-newest top-level ``checkpoint-N`` dir.
-    Older checkpoint bundles and any other subdirectories are omitted (a
-    training output is flat apart from its checkpoint dirs).
+    ``patterns`` holds exact repo-relative paths: everything under the
+    numerically-newest top-level ``checkpoint-N`` dir, plus root-level files
+    that have NO same-named twin inside that bundle.  The stop-save writes the
+    full training state twice (final files at the root AND the checkpoint
+    bundle), so fetching both doubles the footprint for zero resume value:
+    the checkpoint copy is authoritative for the exact step.  Older checkpoint
+    bundles and any other subdirectories are omitted (a training output is
+    flat apart from its checkpoint dirs).  With no checkpoint dir at all
+    (adapter-only output) every root file is kept.
     """
+    names = [str(getattr(sibling, "rfilename", None) or "") for sibling in siblings or []]
+    names = [name for name in names if name]
     newest_name: Optional[str] = None
     newest_step: Optional[int] = None
-    for sibling in siblings or []:
-        rfilename = getattr(sibling, "rfilename", None) or ""
-        parts = str(rfilename).split("/")
+    for name in names:
+        parts = name.split("/")
         if len(parts) == 2 and parts[0]:
             step = _checkpoint_dir_step(parts[0])
             if step is not None and (newest_step is None or step > newest_step):
                 newest_step = step
                 newest_name = parts[0]
     newest_prefix = f"{newest_name}/" if newest_name else None
+    # Basenames already carried inside the newest bundle: their root-level
+    # twins are byte-duplicates with no resume value.
+    bundled: set = set()
+    if newest_prefix:
+        for name in names:
+            if name.startswith(newest_prefix):
+                rest = name[len(newest_prefix):]
+                if rest and "/" not in rest:
+                    bundled.add(rest)
     patterns: list = []
     omitted = 0
     omitted_bytes = 0
+    by_name = {}
     for sibling in siblings or []:
         rfilename = str(getattr(sibling, "rfilename", None) or "")
-        if not rfilename:
+        if rfilename:
+            by_name[rfilename] = sibling
+    for name in names:
+        if "/" not in name:
+            if name in bundled:
+                omitted += 1
+                try:
+                    omitted_bytes += int(getattr(by_name[name], "size", None) or 0)
+                except (TypeError, ValueError):
+                    continue
+                continue
+            patterns.append(name)
             continue
-        if "/" not in rfilename or (newest_prefix and rfilename.startswith(newest_prefix)):
-            patterns.append(rfilename)
+        if newest_prefix and name.startswith(newest_prefix):
+            patterns.append(name)
             continue
         omitted += 1
         try:
-            omitted_bytes += int(getattr(sibling, "size", None) or 0)
+            omitted_bytes += int(getattr(by_name[name], "size", None) or 0)
         except (TypeError, ValueError):
             continue
     return patterns, newest_step, omitted, omitted_bytes

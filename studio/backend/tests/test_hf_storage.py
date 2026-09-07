@@ -298,6 +298,9 @@ def test_select_sparse_prefers_newest_checkpoint_numerically():
         _sibling("checkpoint-9/optimizer.pt", 100),
         _sibling("config.json", 5),
         _sibling("run-config.json", 6),
+        _sibling("tokenizer.json", 11),
+        # Stop-save duplicates: same bytes at root and inside the bundle.
+        _sibling("optimizer.pt", 100),
         _sibling("model.safetensors", 300),
         _sibling("stray-dir/notes.txt", 7),
     ]
@@ -310,12 +313,15 @@ def test_select_sparse_prefers_newest_checkpoint_numerically():
     assert "checkpoint-19/model.safetensors" in patterns
     assert "config.json" in patterns
     assert "run-config.json" in patterns
-    assert "model.safetensors" in patterns
+    assert "tokenizer.json" in patterns
     assert not any(p.startswith("checkpoint-5/") for p in patterns)
     assert not any(p.startswith("checkpoint-9/") for p in patterns)
+    # Root twins of bundled files carry zero resume value: omitted.
+    assert "optimizer.pt" not in patterns
+    assert "model.safetensors" not in patterns
     assert "stray-dir/notes.txt" not in patterns
-    assert omitted == 4  # checkpoint-5 x2 + checkpoint-9 x1 + stray x1
-    assert omitted_bytes == 100 + 200 + 100 + 7
+    assert omitted == 6  # ckpt-5 x2 + ckpt-9 x1 + root dups x2 + stray x1
+    assert omitted_bytes == 100 + 200 + 100 + 100 + 300 + 7
 
 
 def test_select_sparse_adapter_only_repo_keeps_all_roots():
@@ -337,6 +343,7 @@ def test_download_sparse_passes_exact_patterns(monkeypatch, tmp_path):
     siblings = [
         _sibling("checkpoint-5/optimizer.pt", 100),
         _sibling("checkpoint-19/optimizer.pt", 100),
+        _sibling("optimizer.pt", 100),
         _sibling("config.json", 5),
         _sibling("run-config.json", 6),
     ]

@@ -12,7 +12,11 @@ import sys
 import types
 from pathlib import Path
 
-from utils.paths.hf_pull import _validate_repo_id, download_output_from_huggingface
+from utils.paths.hf_pull import (
+    _select_sparse_patterns,
+    _validate_repo_id,
+    download_output_from_huggingface,
+)
 from utils.paths.storage_push import push_output_to_huggingface
 
 
@@ -250,3 +254,115 @@ def test_download_bad_repo_never_calls_api(monkeypatch, tmp_path):
     assert ok is False
     assert path is None
     assert error is not None and "owner/name" in error
+
+
+def _sibling(name, size=10):
+    return types.SimpleNamespace(rfilename=name, size=size)
+
+
+def _install_sparse_hub(monkeypatch, siblings, seen, fail_listing=False):
+    pkg = types.ModuleType("huggingface_hub")
+
+    def _repo_info(repo_id=None, revision=None, token=None):
+        seen["listing"] = {"repo_id": repo_id, "revision": revision, "token": token}
+        if fail_listing:
+            raise RuntimeError("listing unavailable")
+        return types.SimpleNamespace(siblings=list(siblings))
+
+    def _snapshot_download(repo_id, revision=None, local_dir=None, token=None, **kwargs):
+        seen["download"] = {
+            "repo_id": repo_id,
+            "revision": revision,
+            "local_dir": local_dir,
+            "token": token,
+            **kwargs,
+        }
+        target = Path(local_dir)
+        for name in kwargs.get("allow_patterns") or []:
+            entry = target / name
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.write_bytes(b"fake")
+        return str(target)
+
+    pkg.repo_info = _repo_info
+    pkg.snapshot_download = _snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", pkg)
+
+
+def test_select_sparse_prefers_newest_checkpoint_numerically():
+    siblings = [
+        _sibling("checkpoint-5/optimizer.pt", 100),
+        _sibling("checkpoint-5/model.safetensors", 200),
+        _sibling("checkpoint-19/optimizer.pt", 100),
+        _sibling("checkpoint-19/model.safetensors", 200),
+        _sibling("checkpoint-9/optimizer.pt", 100),
+        _sibling("config.json", 5),
+        _sibling("run-config.json", 6),
+        _sibling("model.safetensors", 300),
+        _sibling("stray-dir/notes.txt", 7),
+    ]
+
+    patterns, newest_step, omitted, omitted_bytes = _select_sparse_patterns(siblings)
+
+    # Lexicographic order would pick checkpoint-5 or 9; numeric picks 19.
+    assert newest_step == 19
+    assert "checkpoint-19/optimizer.pt" in patterns
+    assert "checkpoint-19/model.safetensors" in patterns
+    assert "config.json" in patterns
+    assert "run-config.json" in patterns
+    assert "model.safetensors" in patterns
+    assert not any(p.startswith("checkpoint-5/") for p in patterns)
+    assert not any(p.startswith("checkpoint-9/") for p in patterns)
+    assert "stray-dir/notes.txt" not in patterns
+    assert omitted == 4  # checkpoint-5 x2 + checkpoint-9 x1 + stray x1
+    assert omitted_bytes == 100 + 200 + 100 + 7
+
+
+def test_select_sparse_adapter_only_repo_keeps_all_roots():
+    siblings = [
+        _sibling("adapter_model.safetensors", 50),
+        _sibling("adapter_config.json", 2),
+        _sibling("run-config.json", 3),
+    ]
+
+    patterns, newest_step, omitted, omitted_bytes = _select_sparse_patterns(siblings)
+
+    assert newest_step is None
+    assert sorted(patterns) == ["adapter_config.json", "adapter_model.safetensors", "run-config.json"]
+    assert (omitted, omitted_bytes) == (0, 0)
+
+
+def test_download_sparse_passes_exact_patterns(monkeypatch, tmp_path):
+    seen = {}
+    siblings = [
+        _sibling("checkpoint-5/optimizer.pt", 100),
+        _sibling("checkpoint-19/optimizer.pt", 100),
+        _sibling("config.json", 5),
+        _sibling("run-config.json", 6),
+    ]
+    _install_sparse_hub(monkeypatch, siblings, seen)
+    dest = tmp_path / "restored"
+
+    ok, path, error = download_output_from_huggingface(
+        "owner/model", str(dest), revision="abc123", hf_token="tok"
+    )
+
+    assert (ok, error) == (True, None)
+    assert path == str(dest)
+    assert seen["listing"] == {"repo_id": "owner/model", "revision": "abc123", "token": "tok"}
+    requested = seen["download"]["allow_patterns"]
+    assert sorted(requested) == ["checkpoint-19/optimizer.pt", "config.json", "run-config.json"]
+    assert (dest / "checkpoint-19" / "optimizer.pt").is_file()
+    assert not (dest / "checkpoint-5").exists()
+
+
+def test_download_sparse_falls_back_to_full_when_listing_fails(monkeypatch, tmp_path):
+    seen = {}
+    _install_sparse_hub(monkeypatch, [], seen, fail_listing=True)
+    dest = tmp_path / "restored"
+
+    ok, path, error = download_output_from_huggingface("owner/model", str(dest))
+
+    assert (ok, error) == (True, None)
+    # Fallback keeps the historical call shape: no allow_patterns at all.
+    assert "allow_patterns" not in seen["download"]

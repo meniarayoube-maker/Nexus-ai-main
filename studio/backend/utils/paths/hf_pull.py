@@ -9,6 +9,13 @@ output) into a local directory so the run-history restore flow can register
 it.  Uploads stream per file (no local archive), so downloads likewise need
 no staging: ``snapshot_download`` writes straight into ``dest_dir``.
 
+Restores are sparse by default: the repo accumulates every save point, so a
+full download can exceed the working disk.  The file list is fetched first
+(``repo_info``) and only the newest ``checkpoint-N`` bundle plus root-level
+files are requested via exact ``allow_patterns``.  When the listing fails for
+any reason the code falls back to the historical full download -- never worse
+than today.
+
 huggingface_hub is imported lazily so unit tests can stub it and hosts
 without the package fail precisely instead of at import time.
 """
@@ -70,6 +77,74 @@ def _describe_error(exc: BaseException) -> str:
     return f"Hugging Face download failed: {text}"
 
 
+def _format_bytes(num: object) -> str:
+    """Tiny human-readable byte formatter (local so this module never imports
+    the heavy kaggle client just for formatting)."""
+    try:
+        value = float(num or 0)
+    except (TypeError, ValueError):
+        return "unknown size"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def _checkpoint_dir_step(name: str) -> Optional[int]:
+    """Numeric step of a top-level ``checkpoint-<N>`` dir name, else None.
+
+    Local twin of the kaggle uploader's sorter (kept here so this module never
+    imports the heavy kaggle client): lexicographic order lies
+    (``checkpoint-19`` < ``checkpoint-5``), so the newest bundle must be
+    picked numerically.
+    """
+    prefix, sep, num = str(name or "").strip().partition("-")
+    if prefix != "checkpoint" or not sep or not num.isdigit():
+        return None
+    return int(num)
+
+
+def _select_sparse_patterns(
+    siblings: object,
+) -> "Tuple[list, Optional[int], int, int]":
+    """Pick the sparse-restore file set from ``repo_info`` siblings.
+
+    Returns ``(patterns, newest_step, omitted_count, omitted_bytes)`` where
+    ``patterns`` holds exact repo-relative paths: every root-level file plus
+    everything under the numerically-newest top-level ``checkpoint-N`` dir.
+    Older checkpoint bundles and any other subdirectories are omitted (a
+    training output is flat apart from its checkpoint dirs).
+    """
+    newest_name: Optional[str] = None
+    newest_step: Optional[int] = None
+    for sibling in siblings or []:
+        rfilename = getattr(sibling, "rfilename", None) or ""
+        parts = str(rfilename).split("/")
+        if len(parts) == 2 and parts[0]:
+            step = _checkpoint_dir_step(parts[0])
+            if step is not None and (newest_step is None or step > newest_step):
+                newest_step = step
+                newest_name = parts[0]
+    newest_prefix = f"{newest_name}/" if newest_name else None
+    patterns: list = []
+    omitted = 0
+    omitted_bytes = 0
+    for sibling in siblings or []:
+        rfilename = str(getattr(sibling, "rfilename", None) or "")
+        if not rfilename:
+            continue
+        if "/" not in rfilename or (newest_prefix and rfilename.startswith(newest_prefix)):
+            patterns.append(rfilename)
+            continue
+        omitted += 1
+        try:
+            omitted_bytes += int(getattr(sibling, "size", None) or 0)
+        except (TypeError, ValueError):
+            continue
+    return patterns, newest_step, omitted, omitted_bytes
+
+
 def _remove_new_entries(dest: Path, pre_existing: set) -> None:
     """Remove entries that appeared in ``dest`` during a failed download.
 
@@ -105,6 +180,12 @@ def download_output_from_huggingface(
     Returns ``(ok, path, error)`` with the same non-fatal contract as the
     Kaggle downloader: callers surface ``error`` but already-existing state is
     untouched (partials from this call are removed).
+
+    The download is sparse: only the newest ``checkpoint-N`` bundle plus
+    root-level files are fetched (see :func:`_select_sparse_patterns`), so a
+    repo holding many save points still restores inside a small working disk.
+    When the remote file listing fails, the call falls back to a full
+    download.
     """
     slug = _validate_repo_id(repo_id)
     if slug is None:
@@ -129,13 +210,61 @@ def download_output_from_huggingface(
             f"Install huggingface_hub and retry. ({exc})",
         )
 
+    revision = revision.strip() if revision and revision.strip() else None
+    token = hf_token.strip() if hf_token and hf_token.strip() else None
+
+    # Sparse shortlist first: exact paths keep the restore to ~one save point
+    # even when the repo accumulated many.  Any listing failure falls back to
+    # the historical full download (and never changes the call shape the
+    # existing callers/tests rely on).
+    allow_patterns: Optional[list] = None
     try:
-        snapshot_download(
-            repo_id = slug,
-            revision = (revision.strip() if revision and revision.strip() else None),
-            local_dir = str(dest),
-            token = (hf_token.strip() if hf_token and hf_token.strip() else None),
+        from huggingface_hub import repo_info as _hub_repo_info
+
+        siblings = getattr(
+            _hub_repo_info(repo_id = slug, revision = revision, token = token),
+            "siblings",
+            None,
         )
+        if siblings:
+            selected, newest_step, omitted, omitted_bytes = _select_sparse_patterns(siblings)
+            if selected:
+                allow_patterns = selected
+                newest = f"checkpoint-{newest_step}" if newest_step is not None else "none"
+                logger.info(
+                    "Hugging Face sparse restore: %s -> %s: %d files (newest %s), "
+                    "omitting %d superseded files (%s)",
+                    slug,
+                    dest,
+                    len(selected),
+                    newest,
+                    omitted,
+                    _format_bytes(omitted_bytes),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Hugging Face file listing failed for %s; falling back to full download: %s",
+            slug,
+            exc,
+        )
+        allow_patterns = None
+
+    try:
+        if allow_patterns is None:
+            snapshot_download(
+                repo_id = slug,
+                revision = revision,
+                local_dir = str(dest),
+                token = token,
+            )
+        else:
+            snapshot_download(
+                repo_id = slug,
+                revision = revision,
+                local_dir = str(dest),
+                token = token,
+                allow_patterns = allow_patterns,
+            )
         logger.info("Hugging Face dataset downloaded: %s -> %s", slug, dest)
         return (True, str(dest), None)
     except Exception as exc:  # noqa: BLE001

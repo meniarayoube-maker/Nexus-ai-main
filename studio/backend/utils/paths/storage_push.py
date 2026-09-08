@@ -186,12 +186,36 @@ def push_output_to_huggingface(
         _enforce_repo_visibility(api, repo_id, private=private, token=token)
         created = api.create_repo(repo_id, private=private, exist_ok=True, token=token)
         resolved_repo_id = created.repo_id if created is not None else repo_id
-        api.upload_folder(
-            repo_id=resolved_repo_id,
-            folder_path=str(root),
-            commit_message=commit_message or f"Upload training output from {root.name}",
-            token=token,
-        )
+        newest_step = _upload_newest_checkpoint_step(root)
+        allow_patterns = _upload_allow_patterns(root, newest_step)
+        if allow_patterns is not None:
+            newest = f"checkpoint-{newest_step}" if newest_step is not None else "no bundle"
+            logger.info(
+                "Hugging Face sparse push: %s -> %s: %d files (%s)",
+                root, repo_id, len(allow_patterns), newest,
+            )
+        if allow_patterns is not None and _supports_kwarg(api.upload_folder, "allow_patterns"):
+            api.upload_folder(
+                repo_id=resolved_repo_id,
+                folder_path=str(root),
+                commit_message=commit_message or f"Upload training output from {root.name}",
+                token=token,
+                allow_patterns=allow_patterns,
+            )
+        else:
+            # Ancient client without pattern support: historical full upload.
+            if allow_patterns is not None:
+                logger.warning(
+                    "HF client has no upload_folder allow_patterns; uploading full dir for %s",
+                    resolved_repo_id,
+                )
+            api.upload_folder(
+                repo_id=resolved_repo_id,
+                folder_path=str(root),
+                commit_message=commit_message or f"Upload training output from {root.name}",
+                token=token,
+            )
+        _prune_superseded_remote_checkpoints(api, resolved_repo_id, newest_step, token=token)
     except Exception as exc:  # noqa: BLE001
         reason = _describe_error(exc)
         logger.warning("HF push failed for %s -> %s: %s", root, repo_id, reason)
@@ -200,6 +224,97 @@ def push_output_to_huggingface(
     repo_url = f"https://huggingface.co/{resolved_repo_id}"
     logger.info("HF push complete: %s -> %s", root, repo_url)
     return (True, repo_url, None)
+
+
+def _supports_kwarg(fn: object, name: str) -> bool:
+    """Whether ``fn`` accepts keyword ``name`` (client version tolerance)."""
+    try:
+        import inspect as _inspect
+
+        return name in _inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _upload_newest_checkpoint_step(root: Path) -> Optional[int]:
+    """Numerically-newest local top-level ``checkpoint-N`` step, else None."""
+    from utils.paths.hf_pull import _checkpoint_dir_step
+
+    newest: Optional[int] = None
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.is_dir() and not entry.is_symlink():
+            step = _checkpoint_dir_step(entry.name)
+            if step is not None and (newest is None or step > newest):
+                newest = step
+    return newest
+
+
+def _upload_allow_patterns(root: Path, newest_step: Optional[int]) -> Optional[list]:
+    """Exact relative paths to upload: all root files plus the newest bundle.
+
+    Mirrors the Kaggle uploader's "keeping newest, omitting superseded" rule
+    so each save point uploads ~one bundle instead of the whole accumulated
+    output dir.  Returns None only when the directory cannot be listed (the
+    caller then falls back to the historical full upload).
+    """
+    try:
+        top = sorted(p.name for p in root.iterdir())
+    except OSError:
+        return None
+    patterns = [name for name in top if (root / name).is_file() or (root / name).is_symlink()]
+    if newest_step is not None:
+        wanted = f"checkpoint-{newest_step}"
+        if wanted in top and (root / wanted).is_dir():
+            try:
+                for child in sorted((root / wanted).iterdir()):
+                    if child.is_file() or child.is_symlink():
+                        patterns.append(f"{wanted}/{child.name}")
+            except OSError:
+                return None
+    return patterns
+
+
+def _prune_superseded_remote_checkpoints(
+    api, repo_id: str, newest_step: Optional[int], *, token
+) -> None:
+    """Delete remote ``checkpoint-N`` bundles older than the uploaded newest.
+
+    Runs only after a successful upload and never fails the push: a missed
+    prune just leaves bloat the sparse restore already tolerates.  Nothing is
+    deleted when no bundle was uploaded (adapter-only output), and never a
+    bundle with step >= the newest (clock skew protection).
+    """
+    if newest_step is None:
+        return
+    from utils.paths.hf_pull import _checkpoint_dir_step
+
+    try:
+        remote = api.list_repo_files(repo_id=repo_id, token=token)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HF remote listing failed for %s; skipping prune: %s", repo_id, exc)
+        return
+    doomed: list = []
+    for name in remote or []:
+        top = str(name or "").split("/")[0]
+        step = _checkpoint_dir_step(top)
+        if step is not None and step < newest_step and top not in doomed:
+            doomed.append(top)
+    for folder in sorted(doomed):
+        deleter = getattr(api, "delete_folder", None)
+        if deleter is None:
+            logger.warning("HF client has no delete_folder; keeping superseded %s", folder)
+            return
+        try:
+            deleter(repo_id=repo_id, folder_path=folder, token=token)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("HF prune of %s/%s failed (non-fatal): %s", repo_id, folder, exc)
+            continue
+        logger.info("Hugging Face sparse push: %s: pruned superseded %s (newest checkpoint-%d)",
+                    repo_id, folder, newest_step)
 
 
 def _enforce_repo_visibility(api, repo_id: str, *, private: bool, token) -> None:

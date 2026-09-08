@@ -373,3 +373,135 @@ def test_download_sparse_falls_back_to_full_when_listing_fails(monkeypatch, tmp_
     assert (ok, error) == (True, None)
     # Fallback keeps the historical call shape: no allow_patterns at all.
     assert "allow_patterns" not in seen["download"]
+
+
+class SparsePushApi(PrivateExistingApi):
+    """Fake client with modern upload_folder + prune surface."""
+
+    deleted = []
+
+    def upload_folder(self, repo_id, folder_path, commit_message=None, token=None,
+                      allow_patterns=None):
+        self.calls.append(("upload_folder", repo_id, folder_path, allow_patterns))
+
+    def list_repo_files(self, repo_id=None, token=None):
+        self.calls.append(("list_repo_files", repo_id))
+        return list(getattr(self, "remote_files", []))
+
+    def delete_folder(self, repo_id=None, folder_path=None, token=None):
+        self.calls.append(("delete_folder", repo_id, folder_path))
+        SparsePushApi.deleted.append(folder_path)
+
+
+def _make_checkpoint_run(tmp_path):
+    run_dir = tmp_path / "run_ckpt"
+    run_dir.mkdir()
+    for ckpt in ("checkpoint-5", "checkpoint-19"):
+        d = run_dir / ckpt
+        d.mkdir()
+        (d / "optimizer.pt").write_bytes(b"fake-opt")
+        (d / "model.safetensors").write_bytes(b"fake-weights")
+    (run_dir / "config.json").write_bytes(b"{}")
+    (run_dir / "run-config.json").write_bytes(b"{}")
+    return run_dir
+
+
+def test_push_sparse_uploads_newest_bundle_and_prunes_old(monkeypatch, tmp_path):
+    _install_fake_hub(monkeypatch, SparsePushApi)
+    SparsePushApi.created.clear()
+    SparsePushApi.deleted.clear()
+    SparsePushApi.remote_files = [
+        "checkpoint-5/optimizer.pt",
+        "checkpoint-19/optimizer.pt",
+        "config.json",
+    ]
+    run_dir = _make_checkpoint_run(tmp_path)
+
+    ok, url, error = push_output_to_huggingface(
+        str(run_dir), "owner/model", hf_token="tok", private=True
+    )
+
+    assert (ok, error) == (True, None)
+    assert url == "https://huggingface.co/owner/model"
+    api = SparsePushApi.created[-1]
+    upload = next(c for c in api.calls if c[0] == "upload_folder")
+    assert sorted(upload[3]) == [
+        "README.md",
+        "checkpoint-19/model.safetensors",
+        "checkpoint-19/optimizer.pt",
+        "config.json",
+        "run-config.json",
+    ]
+    # Only the older remote bundle is pruned; newest is never deleted.
+    assert SparsePushApi.deleted == ["checkpoint-5"]
+
+
+def test_push_prune_never_touches_newer_remote_bundles(monkeypatch, tmp_path):
+    _install_fake_hub(monkeypatch, SparsePushApi)
+    SparsePushApi.created.clear()
+    SparsePushApi.deleted.clear()
+    SparsePushApi.remote_files = [
+        "checkpoint-5/optimizer.pt",
+        "checkpoint-19/optimizer.pt",
+        "checkpoint-25/optimizer.pt",
+    ]
+    run_dir = _make_checkpoint_run(tmp_path)
+
+    ok, _, error = push_output_to_huggingface(
+        str(run_dir), "owner/model", hf_token="tok", private=True
+    )
+
+    assert (ok, error) == (True, None)
+    assert SparsePushApi.deleted == ["checkpoint-5"]
+
+
+def test_push_adapter_only_uploads_roots_and_prunes_nothing(monkeypatch, tmp_path):
+    _install_fake_hub(monkeypatch, SparsePushApi)
+    SparsePushApi.created.clear()
+    SparsePushApi.deleted.clear()
+    SparsePushApi.remote_files = ["checkpoint-5/optimizer.pt", "config.json"]
+    run_dir = _make_output_dir(tmp_path)
+
+    ok, _, error = push_output_to_huggingface(
+        str(run_dir), "owner/model", hf_token="tok", private=True
+    )
+
+    assert (ok, error) == (True, None)
+    api = SparsePushApi.created[-1]
+    upload = next(c for c in api.calls if c[0] == "upload_folder")
+    assert sorted(upload[3]) == ["README.md", "adapter_model.safetensors"]
+    assert SparsePushApi.deleted == []
+
+
+def test_push_prune_skipped_when_listing_fails(monkeypatch, tmp_path):
+    class NoListApi(SparsePushApi):
+        def list_repo_files(self, repo_id=None, token=None):
+            raise RuntimeError("listing down")
+
+    _install_fake_hub(monkeypatch, NoListApi)
+    NoListApi.created.clear()
+    NoListApi.deleted.clear()
+    run_dir = _make_checkpoint_run(tmp_path)
+
+    ok, _, error = push_output_to_huggingface(
+        str(run_dir), "owner/model", hf_token="tok", private=True
+    )
+
+    assert (ok, error) == (True, None)
+    assert NoListApi.deleted == []
+
+
+def test_push_legacy_client_falls_back_to_full_upload(monkeypatch, tmp_path):
+    # Legacy upload_folder without allow_patterns: historical full upload.
+    _install_fake_hub(monkeypatch, PrivateExistingApi)
+    PrivateExistingApi.created.clear()
+    run_dir = _make_checkpoint_run(tmp_path)
+
+    ok, _, error = push_output_to_huggingface(
+        str(run_dir), "owner/model", hf_token="tok", private=True
+    )
+
+    assert (ok, error) == (True, None)
+    api = PrivateExistingApi.created[-1]
+    upload = next(c for c in api.calls if c[0] == "upload_folder")
+    assert upload == ("upload_folder", "owner/model", str(run_dir))

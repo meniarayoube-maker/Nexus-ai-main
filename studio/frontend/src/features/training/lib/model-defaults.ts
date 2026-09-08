@@ -144,6 +144,10 @@ export function mapBackendModelConfigToTrainingPatch(
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;
 
+  if (typeof training?.distributed_ddp === "boolean") {
+    patch.ddpEnabled = training.distributed_ddp;
+  }
+
   const evalSteps = toNumber(training?.eval_steps);
   if (evalSteps !== undefined) patch.evalSteps = evalSteps;
 

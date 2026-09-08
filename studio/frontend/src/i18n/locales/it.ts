@@ -2220,6 +2220,9 @@ export const it = {
         "Numero di passaggi completi sul dataset. Imposta 0 per procedere in base agli step massimi.",
       saveSteps: "Step fra i salvataggi",
       saveStepsTooltip: "Salva un checkpoint ogni N step. 0 per disattivare.",
+      ddpEnabled: "Multi-GPU (DDP)",
+      ddpEnabledTooltip:
+        "Replica il modello su ogni GPU e allena in parallelo (NCCL). Disattivato mantiene la modalità predefinita a processo singolo. Scala la dimensione effettiva del batch con il numero di GPU.",
       evalSteps: "Step fra le valutazioni",
       evalStepsTooltip:
         "Frazione degli step totali fra due valutazioni (0-1). Imposta 0 per disattivare la valutazione. Per esempio 0,01 = valuta ogni 1% degli step.",

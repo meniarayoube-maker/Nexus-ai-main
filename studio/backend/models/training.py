@@ -578,6 +578,14 @@ class TrainingStartRequest(BaseModel):
         ),
     )
     packing: bool = Field(False, description = "Enable sequence packing")
+    distributed_ddp: bool = Field(
+        False,
+        description = (
+            "Replicate the model on every visible CUDA GPU (one process per "
+            "GPU, NCCL gradient sync) instead of sharding it across cards in "
+            "a single process. Opt-in DDP v1: CUDA text training only."
+        ),
+    )
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
     embedding_learning_rate: Optional[float] = Field(

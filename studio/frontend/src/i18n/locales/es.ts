@@ -2213,6 +2213,9 @@ export const es = {
         "Número de pasadas completas sobre el conjunto de datos. Pon 0 para ejecutar por pasos máximos.",
       saveSteps: "Pasos entre guardados",
       saveStepsTooltip: "Guarda un checkpoint cada N pasos. 0 para desactivar.",
+      ddpEnabled: "Multi-GPU (DDP)",
+      ddpEnabledTooltip:
+        "Replica el modelo en cada GPU y entrena en paralelo (NCCL). Desactivado mantiene el modo predeterminado de un solo proceso. Escala el tamaño efectivo del lote con el número de GPUs.",
       evalSteps: "Pasos entre evaluaciones",
       evalStepsTooltip:
         "Fracción del total de pasos de entrenamiento entre evaluaciones (0-1). Pon 0 para desactivar la evaluación. P. ej. 0.01 = evaluar cada 1 % de los pasos.",

@@ -61,6 +61,7 @@ export interface TrainingStartRequest {
   warmup_ratio: number | null;
   max_steps: number | null;
   save_steps: number;
+  distributed_ddp: boolean;
   eval_steps: number;
   weight_decay: number;
   max_grad_norm?: number | null;

@@ -2187,6 +2187,9 @@ export const ptBR = {
         "Número de passagens completas pelo dataset. Defina 0 para rodar por passos máximos.",
       saveSteps: "Passos para Salvar",
       saveStepsTooltip: "Salva um checkpoint a cada N passos. 0 para desativar.",
+      ddpEnabled: "Multi-GPU (DDP)",
+      ddpEnabledTooltip:
+        "Replica o modelo em cada GPU e treina em paralelo (NCCL). Desligado mantém o modo padrão de processo único. Escala o tamanho efetivo do lote com o número de GPUs.",
       evalSteps: "Passos de Validação",
       evalStepsTooltip:
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",

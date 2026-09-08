@@ -2184,6 +2184,9 @@ export const en = {
         "Number of full passes over the dataset. Set 0 to run by max steps.",
       saveSteps: "Save Steps",
       saveStepsTooltip: "Save a checkpoint every N steps. 0 to disable.",
+      ddpEnabled: "Multi-GPU (DDP)",
+      ddpEnabledTooltip:
+        "Replicate the model on every GPU and train in parallel (NCCL). Off keeps the default single-process sharded mode. Scales the effective batch size by the GPU count.",
       evalSteps: "Eval Steps",
       evalStepsTooltip:
         "Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps.",

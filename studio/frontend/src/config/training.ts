@@ -154,6 +154,7 @@ export const DEFAULT_HYPERPARAMS = {
   saveSteps: 0,
   evalSteps: 0.0,
   packing: false,
+  ddpEnabled: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,
   randomSeed: 3407,

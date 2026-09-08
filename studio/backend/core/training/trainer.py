@@ -936,6 +936,32 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
+        from core.training.ddp import distributed_active as _ddp_active
+        from core.training.ddp import is_main_process as _ddp_is_main
+
+        _ddp = _ddp_active()
+        if _ddp and not _ddp_is_main():
+            # Non-main ranks are compute-only: rank 0 writes checkpoints,
+            # root files, and uploads.  Wait for it here so no rank tears
+            # down NCCL while rank 0 still finalizes.
+            import torch.distributed as _dist
+
+            _dist.barrier()
+            return
+        try:
+            self._finalize_training_body(output_dir, label = label)
+        finally:
+            if _ddp:
+                import torch.distributed as _dist
+
+                _dist.barrier()
+
+    def _finalize_training_body(
+        self,
+        output_dir,
+        label = "",
+    ):
+        """Save model after training and update progress. Used by all training branches."""
         if self.should_stop and self.save_on_stop:
             from core.training import checkpoint_swap as _swap
 
@@ -1225,6 +1251,15 @@ class UnslothTrainer:
                         return False
 
             device_map = get_device_map(gpu_ids)
+            from core.training.ddp import current_rank as _ddp_current_rank
+            from core.training.ddp import ddp_device_map as _ddp_device_map
+
+            _ddp_rank = _ddp_current_rank()
+            if _ddp_rank is not None:
+                # DDP replicates the model (one process per card): a sharded
+                # "balanced" map is refused in distributed mode, so each rank
+                # loads the full model onto its own card.
+                device_map = _ddp_device_map(_ddp_rank)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -3965,9 +4000,14 @@ class UnslothTrainer:
             self._update_progress(is_training = True, error = None)
 
             if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
-                os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
-                import wandb
-                wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
+                from core.training.ddp import is_main_process as _ddp_is_main
+
+                if not _ddp_is_main():
+                    logger.info("Skipping wandb init on DDP non-main rank\n")
+                else:
+                    os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
+                    import wandb
+                    wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
 
             # Cloud save destinations (Google Drive / Kaggle) resolve outside
             # outputs_root by design; admit them when they sit under an active

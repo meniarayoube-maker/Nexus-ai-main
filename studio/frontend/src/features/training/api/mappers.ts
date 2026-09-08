@@ -148,6 +148,7 @@ export function buildTrainingStartPayload(
     warmup_ratio: isEmbedding ? 0.03 : null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
+    distributed_ddp: config.ddpEnabled ?? false,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     // max_grad_norm omitted on purpose: the backend now honors an explicit value,

@@ -22,6 +22,7 @@ export const MODEL_DEFAULT_STATE_KEYS = [
   "saveSteps",
   "evalSteps",
   "packing",
+  "ddpEnabled",
   "trainOnCompletions",
   "gradientCheckpointing",
   "randomSeed",

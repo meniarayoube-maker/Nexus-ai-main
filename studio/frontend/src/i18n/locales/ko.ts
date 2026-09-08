@@ -2155,6 +2155,9 @@ export const ko = {
         "데이터셋을 완전히 순회하는 횟수입니다. 최대 스텝으로 실행하려면 0으로 설정하세요.",
       saveSteps: "저장 스텝",
       saveStepsTooltip: "N 스텝마다 체크포인트를 저장합니다. 0이면 비활성화됩니다.",
+      ddpEnabled: "멀티 GPU (DDP)",
+      ddpEnabledTooltip:
+        "모델을 각 GPU에 복제하여 병렬로 학습합니다(NCCL). 끄면 기본 단일 프로세스 모드가 유지됩니다. 유효 배치 크기는 GPU 수에 따라 확대됩니다.",
       evalSteps: "평가 스텝",
       evalStepsTooltip:
         "평가 사이의 간격을 전체 학습 스텝 수의 비율로 나타냅니다(0-1). 0으로 설정하면 평가가 비활성화됩니다. 예: 0.01 = 스텝의 1%마다 평가.",

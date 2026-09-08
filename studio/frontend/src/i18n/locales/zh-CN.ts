@@ -2087,6 +2087,9 @@ export const zhCN = {
       scheduleEpochsTooltip: "完整遍历数据集的次数。设为 0 则按最大步数运行。",
       saveSteps: "保存步数",
       saveStepsTooltip: "每 N 步保存一次检查点。0 表示禁用。",
+      ddpEnabled: "多 GPU (DDP)",
+      ddpEnabledTooltip:
+        "在每块 GPU 上复制模型并行训练（NCCL）。关闭则保持默认单进程模式。有效批量大小随 GPU 数量扩大。",
       evalSteps: "评估步数",
       evalStepsTooltip:
         "评估之间间隔占总训练步数的比例（0-1）。设为 0 则禁用评估。例如 0.01 = 每 1% 步评估一次。",

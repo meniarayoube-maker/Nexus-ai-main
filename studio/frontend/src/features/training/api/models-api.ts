@@ -32,6 +32,7 @@ interface BackendTrainingDefaults {
   random_seed?: number;
   vision_image_size?: number | string | null;
   packing?: boolean;
+  distributed_ddp?: boolean;
   train_on_completions?: boolean;
   // Shipped YAML may decode this value as a boolean.
   gradient_checkpointing?: "none" | "true" | "unsloth" | boolean;

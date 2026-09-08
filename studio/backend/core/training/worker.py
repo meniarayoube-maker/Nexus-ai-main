@@ -126,6 +126,129 @@ def _data_parallel_world_size() -> int:
     return max([size for size in sizes if size > 0], default = 1)
 
 
+def _start_ddp_stop_fanout(stop_queue, nprocs: int):
+    """Replicate each stop message once per DDP rank.
+
+    Every rank runs the same worker body with its own stop-poller thread, and
+    an mp.Queue delivers each message exactly once -- without fan-out only one
+    rank would ever observe the stop.  Non-stop messages pass through singly
+    (today's single-poller semantics).  Daemon thread: dies with the worker.
+    """
+    import queue as _queue
+    import threading
+
+    def _fan():
+        while True:
+            try:
+                msg = stop_queue.get()
+            except (EOFError, OSError, ValueError):
+                return
+            try:
+                if isinstance(msg, dict) and msg.get("type") == "stop":
+                    for _ in range(max(int(nprocs), 1)):
+                        stop_queue.put(msg)
+                else:
+                    stop_queue.put(msg)
+            except (EOFError, OSError, ValueError):
+                return
+
+    fan_thread = threading.Thread(target = _fan, daemon = True)
+    fan_thread.start()
+    return fan_thread
+
+
+def _ddp_rank_main(rank: int, event_queue: Any, stop_queue: Any, config: dict) -> None:
+    """Entry point for one DDP rank (torch.multiprocessing.spawn target).
+
+    Must stay top-level and importable: spawn pickles it by reference.  Sets
+    rank identity, binds this process to its card, joins the NCCL group, then
+    re-enters the normal worker body with ``_ddp_spawned`` set so the spawn
+    branch above is skipped (single recursion level).
+    """
+    from core.training import ddp as _ddp_mod
+
+    import torch
+
+    nprocs = int(torch.cuda.device_count() or 1)
+    _ddp_mod.set_rank_env(rank, nprocs)
+    torch.cuda.set_device(rank)
+    torch.distributed.init_process_group(backend = "nccl", rank = rank, world_size = nprocs)
+
+    rank_config = dict(config)
+    rank_config["_ddp_spawned"] = True
+    rank_events: Any = event_queue
+    if rank > 0:
+        # Non-main ranks are compute-only: silence every UI event (progress,
+        # status, warnings, completion) and reporting integrations.  The stop
+        # signal keeps flowing through the real stop_queue; errors surface via
+        # the spawn exception below and the teed stderr log.
+        rank_events = _ddp_mod.NullEvents()
+        rank_config["enable_wandb"] = False
+        rank_config["enable_tensorboard"] = False
+    logger.info(
+        "DDP rank %d/%d starting on cuda:%d (%s)",
+        rank,
+        nprocs,
+        rank,
+        _ddp_mod.effective_batch_str(
+            rank_config.get("batch_size", 2),
+            rank_config.get("gradient_accumulation_steps", 4),
+            nprocs,
+        ),
+    )
+    try:
+        run_training_process(
+            event_queue = rank_events,
+            stop_queue = stop_queue,
+            config = rank_config,
+        )
+    finally:
+        # No barrier here: the finalize gate already rendezvoused both ranks.
+        # destroy without a barrier is standard teardown; a rank stuck in a
+        # collective resolves via the NCCL timeout, then spawn reports it.
+        try:
+            if torch.distributed.is_initialized():
+                torch.distributed.destroy_process_group()
+        except Exception:
+            pass
+
+
+def _run_ddp_supervised(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+    """Launch the DDP spawn and supervise it from the worker process.
+
+    The parent backend keeps watching THIS process (watchdog, heartbeats,
+    event pump) unchanged; rank 0 emits the usual UI events through the real
+    event_queue.  A child failure raises out of ``spawn`` and is reported as
+    an error event (plus the child's stderr traceback, already teed).
+    """
+    import torch
+
+    nprocs = int(torch.cuda.device_count() or 0)
+    _start_ddp_stop_fanout(stop_queue, nprocs)
+    logger.info(
+        "DDP requested: spawning %d ranks (single-node NCCL); "
+        "per-device hyperparameters are unchanged, so the global batch scales x%d.",
+        nprocs,
+        nprocs,
+    )
+    try:
+        torch.multiprocessing.spawn(
+            _ddp_rank_main,
+            args = (event_queue, stop_queue, config),
+            nprocs = nprocs,
+            join = True,
+        )
+    except Exception as exc:
+        import traceback
+
+        logger.error(f"DDP training failed: {exc}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
+        event_queue.put(
+            {"type": "error", "error": f"DDP training failed: {exc}", "ts": time.time()}
+        )
+        return
+
+
 def _model_local_files_only(config: dict) -> bool:
     return bool(config.get("model_snapshot_path"))
 
@@ -3985,6 +4108,32 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    # ── DDP SPAWN (opt-in, CUDA text training) ──
+    # MLX already returned above; the embedding path stays single-process in
+    # v1 (separate SentenceTransformer trainer).  Ranks re-enter this same
+    # function with config["_ddp_spawned"] set, so this branch runs once.
+    if config.get("distributed_ddp") and not config.get("_ddp_spawned"):
+        from core.training import ddp as _ddp_mod
+
+        _ddp_path_ok = not bool(config.get("is_embedding", False))
+        _use_ddp, _ddp_reason = _ddp_mod.should_use_ddp(
+            config, path_supported = _ddp_path_ok
+        )
+        if _use_ddp:
+            _run_ddp_supervised(
+                event_queue = event_queue,
+                stop_queue = stop_queue,
+                config = config,
+            )
+            return
+        _ddp_fallback_msg = (
+            f"DDP requested but unavailable ({_ddp_reason}); running single-process."
+        )
+        logger.warning(_ddp_fallback_msg)
+        event_queue.put(
+            {"type": "warning", "message": _ddp_fallback_msg, "ts": time.time()}
+        )
+
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
         _activate_transformers_version(
@@ -5015,7 +5164,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # branches, and everything else ignores the attribute.
         trainer.storage_upload_callback = None
         _upload_target = str(config.get("storage_target") or "").strip().lower()
-        if _upload_target in ("kaggle", "huggingface"):
+        from core.training.ddp import is_main_process as _ddp_is_main
+
+        if _upload_target in ("kaggle", "huggingface") and _ddp_is_main():
             from utils.paths.kaggle_push import _slug_from_output_dir
 
             _run_slug = _slug_from_output_dir(Path(output_dir))

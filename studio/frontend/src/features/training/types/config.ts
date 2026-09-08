@@ -114,6 +114,7 @@ export interface TrainingConfigState {
   saveSteps: number;
   evalSteps: number;
   packing: boolean;
+  ddpEnabled: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
   randomSeed: number;
@@ -256,6 +257,7 @@ export interface TrainingConfigActions {
   setSaveSteps: (value: number) => void;
   setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
+  setDdpEnabled: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;
   setRandomSeed: (value: number) => void;

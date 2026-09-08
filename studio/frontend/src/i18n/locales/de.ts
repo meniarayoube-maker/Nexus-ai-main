@@ -2220,6 +2220,9 @@ export const de = {
       saveSteps: "Speicherintervall in Schritten",
       saveStepsTooltip:
         "Speichert alle N Schritte einen Checkpoint. 0 zum Deaktivieren.",
+      ddpEnabled: "Multi-GPU (DDP)",
+      ddpEnabledTooltip:
+        "Modell auf alle GPUs replizieren und parallel trainieren (NCCL). Aus behält den Standard-Einzelprozess. Skaliert die effektive Batch-Größe mit der GPU-Anzahl.",
       evalSteps: "Eval-Schritte",
       evalStepsTooltip:
         "Anteil der gesamten Trainingsschritte zwischen Auswertungen (0-1). Auf 0 setzen, um die Auswertung zu deaktivieren. Z. B. 0.01 = alle 1 % der Schritte auswerten.",

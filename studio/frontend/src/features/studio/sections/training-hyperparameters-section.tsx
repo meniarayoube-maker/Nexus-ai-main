@@ -8,6 +8,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -93,6 +94,7 @@ export function TrainingHyperparametersSection({
       saveSteps: state.saveSteps,
       evalSteps: state.evalSteps,
       randomSeed: state.randomSeed,
+      ddpEnabled: state.ddpEnabled,
       setOptimizerType: state.setOptimizerType,
       setLrSchedulerType: state.setLrSchedulerType,
       setBatchSize: state.setBatchSize,
@@ -103,6 +105,7 @@ export function TrainingHyperparametersSection({
       setSaveSteps: state.setSaveSteps,
       setEvalSteps: state.setEvalSteps,
       setRandomSeed: state.setRandomSeed,
+      setDdpEnabled: state.setDdpEnabled,
     })),
   );
   // Only mounted in advanced mode, so start expanded when the user switches to it.
@@ -384,6 +387,15 @@ export function TrainingHyperparametersSection({
                   store.setRandomSeed(Number(event.target.value))
                 }
                 className="w-28 font-mono"
+              />
+            </ParamsRow>
+            <ParamsRow
+              label={t("studio.params.ddpEnabled")}
+              tooltip={t("studio.params.ddpEnabledTooltip")}
+            >
+              <Switch
+                checked={store.ddpEnabled ?? false}
+                onCheckedChange={(checked) => store.setDdpEnabled(checked)}
               />
             </ParamsRow>
           </TabsContent>

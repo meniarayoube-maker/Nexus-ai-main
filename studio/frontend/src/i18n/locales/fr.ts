@@ -2228,6 +2228,9 @@ export const fr = {
       saveSteps: "Étapes de sauvegarde",
       saveStepsTooltip:
         "Enregistrer un checkpoint toutes les N étapes. 0 pour désactiver.",
+      ddpEnabled: "Multi-GPU (DDP)",
+      ddpEnabledTooltip:
+        "Réplique le modèle sur chaque GPU et entraîne en parallèle (NCCL). Désactivé conserve le mode monoprocessus par défaut. Adapte la taille effective du lot au nombre de GPUs.",
       evalSteps: "Étapes d'évaluation",
       evalStepsTooltip:
         "Fraction du nombre total d'étapes d'entraînement entre les évaluations (0-1). Définissez 0 pour désactiver l'évaluation. Ex. 0,01 = évaluer tous les 1 % d'étapes.",

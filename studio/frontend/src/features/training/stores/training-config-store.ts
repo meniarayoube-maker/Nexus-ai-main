@@ -1284,6 +1284,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           notifyStreamingCompat(streamingPatch);
         },
         setPacking: (packing) => setUserEdit({ packing }),
+        setDdpEnabled: (ddpEnabled: boolean) => setUserEdit({ ddpEnabled }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
           setUserEdit({

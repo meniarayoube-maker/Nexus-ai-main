@@ -20,6 +20,7 @@ from core.training.ddp import (
     ddp_requested,
     distributed_active,
     effective_batch_str,
+    ensure_dist_env,
     is_main_process,
     set_rank_env,
     should_use_ddp,
@@ -138,3 +139,22 @@ def test_effective_batch_str():
 def test_null_events_discards():
     sink = NullEvents()
     assert sink.put({"type": "status", "message": "x"}) is None
+
+
+def test_ensure_dist_env_sets_rendezvous(monkeypatch):
+    monkeypatch.delenv("MASTER_ADDR", raising=False)
+    monkeypatch.delenv("MASTER_PORT", raising=False)
+
+    addr, port = ensure_dist_env()
+
+    assert addr == "127.0.0.1"
+    assert port.isdigit() and int(port) > 0
+    assert os.environ["MASTER_ADDR"] == addr
+    assert os.environ["MASTER_PORT"] == port
+
+
+def test_ensure_dist_env_respects_preset(monkeypatch):
+    monkeypatch.setenv("MASTER_ADDR", "10.0.0.5")
+    monkeypatch.setenv("MASTER_PORT", "29555")
+
+    assert ensure_dist_env() == ("10.0.0.5", "29555")

@@ -137,6 +137,28 @@ def set_rank_env(rank: int, world: int) -> None:
     os.environ.setdefault("LOCAL_RANK", str(int(rank)))
 
 
+def ensure_dist_env() -> "Tuple[str, str]":
+    """Ensure the env rendezvous variables for the NCCL group.
+
+    ``torch.multiprocessing.spawn`` (unlike torchrun) does NOT set
+    ``MASTER_ADDR``/``MASTER_PORT``: without them ``init_process_group``
+    fails with "environment variable MASTER_ADDR expected, but not set".
+    Called once in the spawn supervisor so every rank inherits the same
+    endpoint.  Pre-set values are respected (multi-node / custom fabrics).
+    Returns ``(addr, port)``.
+    """
+    addr = os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    port = os.environ.get("MASTER_PORT")
+    if not port:
+        import socket as _socket
+
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = str(sock.getsockname()[1])
+        os.environ["MASTER_PORT"] = port
+    return addr, port
+
+
 def effective_batch_str(per_device: Any, accum: Any, world: int) -> str:
     """Human-readable global batch line for the startup log."""
     try:

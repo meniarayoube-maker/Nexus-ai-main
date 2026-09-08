@@ -224,6 +224,9 @@ def _run_ddp_supervised(*, event_queue: Any, stop_queue: Any, config: dict) -> N
     import torch
 
     nprocs = int(torch.cuda.device_count() or 0)
+    from core.training import ddp as _ddp_mod
+
+    _ddp_addr, _ddp_port = _ddp_mod.ensure_dist_env()
     _start_ddp_stop_fanout(stop_queue, nprocs)
     logger.info(
         "DDP requested: spawning %d ranks (single-node NCCL); "
@@ -231,6 +234,7 @@ def _run_ddp_supervised(*, event_queue: Any, stop_queue: Any, config: dict) -> N
         nprocs,
         nprocs,
     )
+    logger.info("DDP rendezvous at %s:%s", _ddp_addr, _ddp_port)
     try:
         torch.multiprocessing.spawn(
             _ddp_rank_main,

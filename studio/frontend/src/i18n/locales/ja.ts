@@ -2117,6 +2117,9 @@ export const ja = {
       scheduleEpochsTooltip: "データセット全体の完全な学習回数。0 に設定すると最大ステップ数に基づいて実行されます。",
       saveSteps: "保存ステップ間隔",
       saveStepsTooltip: "N ステップごとにチェックポイントを保存します。0 で無効化します。",
+      autoSave: "自動保存",
+      autoSaveTooltip:
+        "定期チェックポイントのマスタースイッチ。オフで間隔は0に、オンで最後の間隔に戻ります。",
       ddpEnabled: "マルチGPU (DDP)",
       ddpEnabledTooltip:
         "モデルを各GPUに複製して並列学習します（NCCL）。オフの場合はデフォルトの単一プロセスモードです。実効バッチサイズはGPU数に応じて拡大します。",

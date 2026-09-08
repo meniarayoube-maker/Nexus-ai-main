@@ -2228,6 +2228,9 @@ export const fr = {
       saveSteps: "Étapes de sauvegarde",
       saveStepsTooltip:
         "Enregistrer un checkpoint toutes les N étapes. 0 pour désactiver.",
+      autoSave: "Sauvegarde auto",
+      autoSaveTooltip:
+        "Interrupteur principal des checkpoints périodiques. Éteint met l'intervalle à 0 ; allumé restaure ton dernier intervalle.",
       ddpEnabled: "Multi-GPU (DDP)",
       ddpEnabledTooltip:
         "Réplique le modèle sur chaque GPU et entraîne en parallèle (NCCL). Désactivé conserve le mode monoprocessus par défaut. Adapte la taille effective du lot au nombre de GPUs.",

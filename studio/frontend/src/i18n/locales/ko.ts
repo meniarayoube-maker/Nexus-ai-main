@@ -2155,6 +2155,9 @@ export const ko = {
         "데이터셋을 완전히 순회하는 횟수입니다. 최대 스텝으로 실행하려면 0으로 설정하세요.",
       saveSteps: "저장 스텝",
       saveStepsTooltip: "N 스텝마다 체크포인트를 저장합니다. 0이면 비활성화됩니다.",
+      autoSave: "자동 저장",
+      autoSaveTooltip:
+        "주기적 체크포인트의 마스터 스위치입니다. 끄면 간격이 0이 되고, 켜면 마지막 간격이 복원됩니다.",
       ddpEnabled: "멀티 GPU (DDP)",
       ddpEnabledTooltip:
         "모델을 각 GPU에 복제하여 병렬로 학습합니다(NCCL). 끄면 기본 단일 프로세스 모드가 유지됩니다. 유효 배치 크기는 GPU 수에 따라 확대됩니다.",

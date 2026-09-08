@@ -27,7 +27,7 @@ import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow, ParamsSliderRow } from "./params-section-controls";
 import { TrainingMemoryParams } from "./training-memory-params";
@@ -111,6 +111,22 @@ export function TrainingHyperparametersSection({
   // Only mounted in advanced mode, so start expanded when the user switches to it.
   const [open, setOpen] = useState(true);
   const [tab, setTab] = useState<HyperparameterTab>("optimization");
+  // Last explicit nonzero save interval, so the auto-save switch restores
+  // the user's own cadence instead of a hardcoded default. saveSteps stays
+  // the single source of truth (epochs toggle, restores, YAML all write it),
+  // this switch only derives from it.
+  const lastSaveStepsRef = useRef(100);
+  const autoSaveEnabled = store.saveSteps > 0;
+  const toggleAutoSave = (checked: boolean) => {
+    if (checked) {
+      store.setSaveSteps(lastSaveStepsRef.current);
+    } else {
+      if (store.saveSteps > 0) {
+        lastSaveStepsRef.current = store.saveSteps;
+      }
+      store.setSaveSteps(0);
+    }
+  };
   const isMac = platformDeviceType === "mac";
   const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
   const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
@@ -351,14 +367,22 @@ export function TrainingHyperparametersSection({
                 </>
               }
             >
-              <Input
-                type="number"
-                value={store.saveSteps}
-                onChange={(event) =>
-                  store.setSaveSteps(Number(event.target.value))
-                }
-                className="w-28 font-mono"
-              />
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={autoSaveEnabled}
+                  onCheckedChange={toggleAutoSave}
+                  aria-label={t("studio.params.autoSave")}
+                />
+                <Input
+                  type="number"
+                  value={store.saveSteps}
+                  onChange={(event) =>
+                    store.setSaveSteps(Number(event.target.value))
+                  }
+                  className="w-28 font-mono"
+                  disabled={!autoSaveEnabled}
+                />
+              </div>
             </ParamsRow>
             <ParamsRow
               label={t("studio.params.evalSteps")}

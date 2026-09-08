@@ -2220,6 +2220,9 @@ export const de = {
       saveSteps: "Speicherintervall in Schritten",
       saveStepsTooltip:
         "Speichert alle N Schritte einen Checkpoint. 0 zum Deaktivieren.",
+      autoSave: "Autom. speichern",
+      autoSaveTooltip:
+        "Hauptschalter für periodische Checkpoints. Aus setzt das Intervall auf 0; Ein stellt dein letztes Intervall wieder her.",
       ddpEnabled: "Multi-GPU (DDP)",
       ddpEnabledTooltip:
         "Modell auf alle GPUs replizieren und parallel trainieren (NCCL). Aus behält den Standard-Einzelprozess. Skaliert die effektive Batch-Größe mit der GPU-Anzahl.",

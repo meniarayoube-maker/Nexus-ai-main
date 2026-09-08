@@ -2187,6 +2187,9 @@ export const ptBR = {
         "Número de passagens completas pelo dataset. Defina 0 para rodar por passos máximos.",
       saveSteps: "Passos para Salvar",
       saveStepsTooltip: "Salva um checkpoint a cada N passos. 0 para desativar.",
+      autoSave: "Salvamento auto",
+      autoSaveTooltip:
+        "Interruptor principal de checkpoints periódicos. Desligado zera o intervalo; ligado restaura teu último intervalo.",
       ddpEnabled: "Multi-GPU (DDP)",
       ddpEnabledTooltip:
         "Replica o modelo em cada GPU e treina em paralelo (NCCL). Desligado mantém o modo padrão de processo único. Escala o tamanho efetivo do lote com o número de GPUs.",

@@ -821,6 +821,13 @@ class UnslothTrainer:
         if save_steps_val and save_steps_val > 0:
             config["save_steps"] = save_steps_val
             config["save_strategy"] = "steps"
+        else:
+            # save_steps=0 must DISABLE periodic checkpoints explicitly:
+            # omitting the keys lets transformers defaults (steps/500) take
+            # over and write checkpoints the user never asked for.  All three
+            # endings (stop-save, cancel, clean completion) save explicitly in
+            # _finalize_training, so "no" only kills the automatic saves.
+            config["save_strategy"] = "no"
 
         if extra_args:
             config.update(extra_args)
@@ -4297,6 +4304,10 @@ class UnslothTrainer:
             if save_steps_val and save_steps_val > 0:
                 config_args["save_steps"] = save_steps_val
                 config_args["save_strategy"] = "steps"
+            else:
+                # Same fail-closed rule as the SFT path: save_steps=0 means no
+                # periodic checkpoints, never the transformers steps/500 default.
+                config_args["save_strategy"] = "no"
 
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:

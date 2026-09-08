@@ -5905,6 +5905,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     if save_steps_val and save_steps_val > 0:
         training_args_kwargs["save_steps"] = save_steps_val
         training_args_kwargs["save_strategy"] = "steps"
+    else:
+        # save_steps=0 disables periodic checkpoints explicitly instead of
+        # inheriting the transformers steps/500 default.
+        training_args_kwargs["save_strategy"] = "no"
 
     args = SentenceTransformerTrainingArguments(**training_args_kwargs)
 

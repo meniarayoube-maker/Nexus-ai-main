@@ -5211,6 +5211,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
+            track_batch_composition = config.get("track_batch_composition", False),
             train_on_completions = False if is_cpt else config.get("train_on_completions", False),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),

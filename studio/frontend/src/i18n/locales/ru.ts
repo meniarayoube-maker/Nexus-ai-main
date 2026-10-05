@@ -2205,6 +2205,8 @@ export const ru = {
       none: "Нет",
       standard: "Стандартный",
       enablePacking: "Включить packing",
+      trackBatchComposition: "Отслеживать состав батчей",
+      trackBatchCompositionTooltip: "Записывает, какие строки датасета попадают в каждый шаг обучения (sidecar-файл). Требуется выключенный packing. Пилотная диагностика.",
       assistantCompletionsOnly: "Только ответы ассистента",
       readMore: "Подробнее",
     },

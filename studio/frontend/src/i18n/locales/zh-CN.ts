@@ -2103,6 +2103,8 @@ export const zhCN = {
       none: "无",
       standard: "标准",
       enablePacking: "启用 packing",
+      trackBatchComposition: "跟踪批次组成",
+      trackBatchCompositionTooltip: "记录每个训练步骤使用了哪些数据集行（sidecar文件）。需要关闭packing。试点诊断。",
       assistantCompletionsOnly: "仅助手回复",
       readMore: "了解更多",
     },

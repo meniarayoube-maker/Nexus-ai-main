@@ -75,6 +75,44 @@ function PackingOption({
   );
 }
 
+function CompositionTrackingOption({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}): ReactElement {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-2">
+      <Checkbox
+        id="trackBatchComposition"
+        checked={checked}
+        onCheckedChange={(value) => onChange(!!value)}
+      />
+      <label
+        htmlFor="trackBatchComposition"
+        className="text-xs text-muted-foreground cursor-pointer"
+      >
+        {t("studio.params.trackBatchComposition")}
+      </label>
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <button
+            type="button"
+            className="text-foreground/70 hover:text-foreground"
+          >
+            <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {t("studio.params.trackBatchCompositionTooltip")}
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
 function TrainOnCompletionsOption({
   checked,
   disabled,
@@ -121,14 +159,17 @@ export function TrainingMemoryParams(): ReactElement {
       datasetFormat: state.datasetFormat,
       datasetStreaming: state.datasetStreaming,
       packing: state.packing,
+      trackBatchComposition: state.trackBatchComposition,
       trainOnCompletions: state.trainOnCompletions,
       gradientCheckpointing: state.gradientCheckpointing,
       isVisionModel: state.isVisionModel,
       isEmbeddingModel: state.isEmbeddingModel,
       isDatasetImage: state.isDatasetImage,
+      isAudioModel: state.isAudioModel,
       visionImageSize: state.visionImageSize,
       setVisionImageSize: state.setVisionImageSize,
       setPacking: state.setPacking,
+      setTrackBatchComposition: state.setTrackBatchComposition,
       setTrainOnCompletions: state.setTrainOnCompletions,
       setGradientCheckpointing: state.setGradientCheckpointing,
     })),
@@ -142,6 +183,14 @@ export function TrainingMemoryParams(): ReactElement {
       selectedModelLower.includes("ocr")
     );
   const showPacking = !(showVisionLora || store.isEmbeddingModel);
+  // Pilot diagnostic: text path with packing=False and no streaming only.
+  // Enabling it turns packing off automatically (see setTrackBatchComposition).
+  const showCompositionTracking = !(
+    showVisionLora ||
+    store.isEmbeddingModel ||
+    store.isAudioModel ||
+    store.datasetStreaming
+  );
   const showTrainOnCompletions = !(
     store.isEmbeddingModel ||
     store.trainingMethod === "cpt" ||
@@ -249,6 +298,12 @@ export function TrainingMemoryParams(): ReactElement {
           checked={store.trainOnCompletions}
           disabled={store.datasetStreaming}
           onChange={store.setTrainOnCompletions}
+        />
+      )}
+      {showCompositionTracking && (
+        <CompositionTrackingOption
+          checked={store.trackBatchComposition}
+          onChange={store.setTrackBatchComposition}
         />
       )}
     </TabsContent>

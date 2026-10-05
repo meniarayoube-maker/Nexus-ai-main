@@ -2172,6 +2172,8 @@ export const ko = {
       none: "없음",
       standard: "표준",
       enablePacking: "패킹 활성화",
+      trackBatchComposition: "배치 구성 추적",
+      trackBatchCompositionTooltip: "각 학습 단계에 어떤 데이터셋 행이 들어가는지 기록합니다(sidecar 파일). packing 꺼짐 필요. 파일럿 진단.",
       assistantCompletionsOnly: "어시스턴트 응답만",
       readMore: "더 알아보기",
     },

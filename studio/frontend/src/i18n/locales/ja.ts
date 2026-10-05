@@ -2132,6 +2132,8 @@ export const ja = {
       none: "なし",
       standard: "標準",
       enablePacking: "パッキングを有効化",
+      trackBatchComposition: "バッチ構成を追跡",
+      trackBatchCompositionTooltip: "各トレーニングステップにどのデータセット行が使われたか記録します（sidecarファイル）。packingオフが必要です。パイロット診断。",
       assistantCompletionsOnly: "アシスタントの応答のみ学習",
       readMore: "詳細を読む",
     },

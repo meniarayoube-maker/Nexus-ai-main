@@ -2204,6 +2204,8 @@ export const ptBR = {
       none: "Nenhum",
       standard: "Padrão",
       enablePacking: "Ativar empacotamento (packing)",
+      trackBatchComposition: "Rastrear composição dos lotes",
+      trackBatchCompositionTooltip: "Registra quais linhas do dataset alimentam cada etapa (arquivo sidecar). Requer packing desativado. Diagnóstico piloto.",
       assistantCompletionsOnly: "Apenas respostas do assistente",
       readMore: "Leia mais",
     },

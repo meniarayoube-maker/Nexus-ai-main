@@ -2245,6 +2245,8 @@ export const fr = {
       none: "Aucun",
       standard: "Standard",
       enablePacking: "Activer le packing",
+      trackBatchComposition: "Suivre la composition des lots",
+      trackBatchCompositionTooltip: "Enregistre quelles lignes du dataset alimentent chaque étape (fichier sidecar). Nécessite packing désactivé. Diagnostic pilote.",
       assistantCompletionsOnly: "Complétions de l'assistant uniquement",
       readMore: "En savoir plus",
     },

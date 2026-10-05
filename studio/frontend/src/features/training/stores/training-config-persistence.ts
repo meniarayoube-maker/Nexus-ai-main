@@ -41,6 +41,8 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "maxPositionEmbeddings",
     "s3Config",
     "wandbToken",
+    // Pilot diagnostic flag: session-only by design, always defaults off.
+    "trackBatchComposition",
   ]);
 
 export function partializeTrainingConfig(

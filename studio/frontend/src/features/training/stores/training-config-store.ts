@@ -1284,6 +1284,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           notifyStreamingCompat(streamingPatch);
         },
         setPacking: (packing) => setUserEdit({ packing }),
+        // Enabling composition tracking turns packing off: the backend
+        // refuses the combination (packed chunks are unattributable), so the
+        // UI resolves the conflict immediately with a single source of truth.
+        setTrackBatchComposition: (trackBatchComposition) =>
+          setUserEdit({
+            trackBatchComposition,
+            ...(trackBatchComposition ? { packing: false } : {}),
+          }),
         setDdpEnabled: (ddpEnabled: boolean) => setUserEdit({ ddpEnabled }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;

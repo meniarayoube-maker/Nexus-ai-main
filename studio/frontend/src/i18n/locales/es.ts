@@ -2230,6 +2230,8 @@ export const es = {
       none: "Ninguno",
       standard: "Estándar",
       enablePacking: "Habilitar packing",
+      trackBatchComposition: "Rastrear composición de lotes",
+      trackBatchCompositionTooltip: "Registra qué filas del dataset alimentan cada paso (archivo sidecar). Requiere packing desactivado. Diagnóstico piloto.",
       assistantCompletionsOnly: "Solo completaciones del asistente",
       readMore: "Leer más",
     },

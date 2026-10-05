@@ -2184,6 +2184,8 @@ export const hi = {
       none: "कोई नहीं",
       standard: "मानक",
       enablePacking: "packing सक्षम करें",
+      trackBatchComposition: "बैच कंपोज़िशन ट्रैक करें",
+      trackBatchCompositionTooltip: "रिकॉर्ड करता है कि कौन-सी डेटासेट पंक्तियाँ प्रत्येक प्रशिक्षण चरण में जाती हैं (sidecar फ़ाइल)। packing बंद होना चाहिए। पायलट डायग्नोस्टिक।",
       assistantCompletionsOnly: "केवल असिस्टेंट completions",
       readMore: "और पढ़ें",
     },

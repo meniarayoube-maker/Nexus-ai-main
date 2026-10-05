@@ -2201,6 +2201,8 @@ export const en = {
       none: "None",
       standard: "Standard",
       enablePacking: "Enable packing",
+      trackBatchComposition: "Track batch composition",
+      trackBatchCompositionTooltip: "Records which dataset rows feed each training step (sidecar file). Requires packing off. Pilot diagnostic.",
       assistantCompletionsOnly: "Assistant completions only",
       readMore: "Read more",
     },

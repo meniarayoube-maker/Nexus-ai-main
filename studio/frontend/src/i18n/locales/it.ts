@@ -2237,6 +2237,8 @@ export const it = {
       none: "Nessuno",
       standard: "Standard",
       enablePacking: "Attiva il packing",
+      trackBatchComposition: "Traccia composizione batch",
+      trackBatchCompositionTooltip: "Registra quali righe del dataset alimentano ogni passo (file sidecar). Richiede packing disattivato. Diagnostica pilota.",
       assistantCompletionsOnly: "Addestra solo sulle risposte dell'assistente",
       readMore: "Scopri di più",
     },

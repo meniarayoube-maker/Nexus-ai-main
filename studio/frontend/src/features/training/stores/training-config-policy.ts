@@ -83,6 +83,9 @@ export const initialTrainingConfigState: TrainingConfigState = {
   datasetSplit: null,
   datasetEvalSplit: null,
   datasetStreaming: false,
+  // Pilot diagnostic, session-only: never persisted, never in YAML (see
+  // NON_PERSISTED_STATE_KEYS). Default off so production runs are unaffected.
+  trackBatchComposition: false,
   manualDatasetOptionsValid: true,
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",

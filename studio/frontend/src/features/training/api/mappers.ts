@@ -157,6 +157,9 @@ export function buildTrainingStartPayload(
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,
+    // Pilot diagnostic (session-only, default off). The backend refuses it
+    // outside the text path with packing=False — fail fast, no silent skip.
+    track_batch_composition: config.trackBatchComposition ?? false,
     optim: config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,

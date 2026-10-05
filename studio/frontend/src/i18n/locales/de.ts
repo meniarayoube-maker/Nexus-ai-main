@@ -2237,6 +2237,8 @@ export const de = {
       none: "Keine",
       standard: "Standard",
       enablePacking: "Packing aktivieren",
+      trackBatchComposition: "Batch-Zusammensetzung verfolgen",
+      trackBatchCompositionTooltip: "Zeichnet auf, welche Datensatzzeilen in jeden Trainingsschritt einfließen (Sidecar-Datei). Erfordert deaktiviertes Packing. Pilot-Diagnose.",
       assistantCompletionsOnly: "Nur Assistenten-Antworten",
       readMore: "Mehr erfahren",
     },

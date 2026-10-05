@@ -1,32 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The mapper used to send max_grad_norm: 0.0 on every run. The backend now honors
-// an explicit threshold on MLX instead of discarding it, so that hardcoded 0 would
-// override the request for every UI run. Omitting the key is the fix, and nothing
-// else catches it if undone: the field is optional in the request type, so
-// restoring the literal would typecheck and pass every other suite.
+// Batch composition tracking is a session-only pilot diagnostic (default off).
+// The UI toggle must reach the wire payload verbatim, and the store setter
+// must resolve the packing conflict immediately (tracking on => packing off)
+// so the backend never receives the refused combination from this UI.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  installLocalStorageFake,
+  registerStoreStubResolver,
+} from "./helpers/kit.ts";
 
 import type { TrainingConfigState } from "../src/features/training/types/config.ts";
 
-registerBundlerResolver();
+registerStoreStubResolver();
+installLocalStorageFake();
 const { buildTrainingStartPayload } = await import(
   "../src/features/training/api/mappers.ts"
 );
 const { initialTrainingConfigState } = await import(
   "../src/features/training/stores/training-config-policy.ts"
 );
+const { useTrainingConfigStore } = await import(
+  "../src/features/training/stores/training-config-store.ts"
+);
 
 const CONFIG: TrainingConfigState = {
   ...initialTrainingConfigState,
   modelType: "text",
   selectedModel: "unsloth/gemma-3-270m-it",
-  projectName: "grad-norm",
+  projectName: "composition",
   trainingMethod: "lora",
   datasetSource: "huggingface",
   datasetFormat: "auto",
@@ -93,22 +99,35 @@ const CONFIG: TrainingConfigState = {
   s3Config: null,
 };
 
-test("the payload leaves max_grad_norm unset so the backend default governs", () => {
-  const payload = buildTrainingStartPayload(CONFIG, null);
+test("composition tracking defaults off in state and on the wire", () => {
+  assert.equal(initialTrainingConfigState.trackBatchComposition, false);
 
-  assert.equal(
-    Object.hasOwn(payload, "max_grad_norm"),
-    false,
-    "max_grad_norm must be absent, not null and not 0",
-  );
-  // An explicit null would serialize and pin the backend to "no global clipping"
-  // just as 0.0 did, so check the wire form too.
-  assert.equal("max_grad_norm" in JSON.parse(JSON.stringify(payload)), false);
+  const payload = buildTrainingStartPayload(CONFIG, null);
+  assert.equal(payload.track_batch_composition, false);
 });
 
-test("the sibling clip knobs keep their existing wire contract", () => {
-  const payload = buildTrainingStartPayload(CONFIG, null);
+test("an enabled toggle reaches the wire payload verbatim", () => {
+  const payload = buildTrainingStartPayload(
+    { ...CONFIG, trackBatchComposition: true },
+    null,
+  );
 
-  assert.equal(payload.max_grad_value, null);
-  assert.equal(payload.weight_decay, CONFIG.weightDecay);
+  assert.equal(payload.track_batch_composition, true);
+});
+
+test("enabling tracking turns packing off in the store", () => {
+  useTrainingConfigStore.setState({ packing: true, trackBatchComposition: false });
+
+  useTrainingConfigStore.getState().setTrackBatchComposition(true);
+
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.trackBatchComposition, true);
+  assert.equal(
+    state.packing,
+    false,
+    "packing must resolve off or the backend refuses the run",
+  );
+
+  useTrainingConfigStore.getState().setTrackBatchComposition(false);
+  assert.equal(useTrainingConfigStore.getState().trackBatchComposition, false);
 });

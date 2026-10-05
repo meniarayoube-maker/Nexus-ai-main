@@ -2177,6 +2177,8 @@ export const ar = {
       none: "بلا",
       standard: "قياسي",
       enablePacking: "تفعيل التعبئة (packing)",
+      trackBatchComposition: "تتبع تركيبة الدفعات",
+      trackBatchCompositionTooltip: "يسجل أي صفوف من الداتاسيت تدخل في كل خطوة تدريب (ملف جانبي). يتطلب إيقاف packing. تشخيص تجريبي.",
       assistantCompletionsOnly: "إكمالات المساعد فقط",
       readMore: "اقرأ المزيد",
     },

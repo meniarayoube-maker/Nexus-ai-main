@@ -68,6 +68,7 @@ export interface TrainingStartRequest {
   max_grad_value?: number | null;
   random_seed: number;
   packing: boolean;
+  track_batch_composition: boolean;
   optim: string;
   lr_scheduler_type: string;
   use_lora: boolean;

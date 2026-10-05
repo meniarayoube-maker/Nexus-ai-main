@@ -114,6 +114,7 @@ export interface TrainingConfigState {
   saveSteps: number;
   evalSteps: number;
   packing: boolean;
+  trackBatchComposition: boolean;
   ddpEnabled: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
@@ -257,6 +258,7 @@ export interface TrainingConfigActions {
   setSaveSteps: (value: number) => void;
   setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
+  setTrackBatchComposition: (value: boolean) => void;
   setDdpEnabled: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;

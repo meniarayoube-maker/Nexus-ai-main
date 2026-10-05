@@ -17,6 +17,7 @@ from core.training.composition_log import (
     ROW_ID_COLUMN,
     CompositionRecorder,
     RowIdRecordingCollator,
+    ensure_row_ids,
     join_with_losses,
     prune_columns_for_tracking,
     read_composition_records,
@@ -189,6 +190,54 @@ def test_join_with_losses_keeps_steps_without_loss():
     sparse = join_with_losses(records, [(2, 0.5)])
     assert sparse[0]["loss"] is None
     assert sparse[1]["loss"] == 0.5
+
+
+class _MaskedDatasetStub:
+    """Standing in for trainer.train_dataset after Unsloth response masking."""
+
+    def __init__(self, rows, keep_id):
+        self._rows = list(rows)
+        self.column_names = (
+            ["input_ids", ROW_ID_COLUMN] if keep_id else ["input_ids"]
+        )
+
+    def __len__(self):
+        return len(self._rows)
+
+    def add_column(self, name, values):
+        assert name == ROW_ID_COLUMN
+        assert len(values) == len(self._rows)
+        return _MaskedDatasetStub(
+            [dict(r, **{name: v}) for r, v in zip(self._rows, values)],
+            keep_id = True,
+        )
+
+    def row_ids(self):
+        return [r.get(ROW_ID_COLUMN) for r in self._rows]
+
+
+def test_masking_kept_column_passes_through_untouched():
+    dataset = _MaskedDatasetStub([{"input_ids": [1]}, {"input_ids": [2]}], keep_id = True)
+    out, action = ensure_row_ids(dataset, expected_rows = 2)
+    assert out is dataset
+    assert action == "present"
+
+
+def test_masking_dropped_column_restamps_when_no_rows_filtered():
+    # Mirrors the pilot log: masking drops every non-model column while all
+    # 8 rows survive (Post-filter dataset size == stamp-time size).
+    dataset = _MaskedDatasetStub([{"input_ids": [1]}] * 8, keep_id = False)
+    out, action = ensure_row_ids(dataset, expected_rows = 8)
+    assert action == "restamped"
+    assert out.row_ids() == list(range(8))
+
+
+def test_masking_dropped_rows_is_refused_not_guessed():
+    dataset = _MaskedDatasetStub([{"input_ids": [1]}] * 6, keep_id = False)
+    with pytest.raises(ValueError, match = "rows were filtered"):
+        ensure_row_ids(dataset, expected_rows = 8)
+    with pytest.raises(ValueError, match = "rows were filtered"):
+        ensure_row_ids(dataset, expected_rows = None)
 
 
 def test_stamp_and_prune_helpers():

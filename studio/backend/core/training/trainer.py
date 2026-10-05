@@ -4087,7 +4087,10 @@ class UnslothTrainer:
                 "Batch composition tracking needs config_args['output_dir'] for the sidecar file"
             )
         config_args["remove_unused_columns"] = False
-        recorder = CompositionRecorder(os.path.join(str(output_dir), "batch_composition.jsonl"))
+        recorder = CompositionRecorder(
+            os.path.join(str(output_dir), "batch_composition.jsonl"),
+            expected_rows = num_rows,
+        )
         logger.info(
             f"Batch composition tracking on: {num_rows} rows, sidecar={recorder.path}"
             + (f", pruned columns={pruned}" if pruned else "")
@@ -4101,11 +4104,24 @@ class UnslothTrainer:
         Must run after ``apply_completion_masking`` (which may rebuild trainer
         state) and covers eval automatically: the eval split is never stamped,
         and capture is off outside optimizer steps anyway.
+
+        Masking drops every non-model column — including a previously stamped
+        ``__row_id__`` — so the id column is re-verified here first: re-stamped
+        only when no row was filtered (positional ids stay exact), refused
+        loudly otherwise. Never records unattributable steps.
         """
         from transformers import TrainerCallback, default_data_collator
 
-        from core.training.composition_log import RowIdRecordingCollator
+        from core.training.composition_log import RowIdRecordingCollator, ensure_row_ids
 
+        self.trainer.train_dataset, restamp_action = ensure_row_ids(
+            self.trainer.train_dataset, getattr(recorder, "expected_rows", None)
+        )
+        if restamp_action == "restamped":
+            logger.info(
+                "Batch composition ids re-stamped after response masking "
+                "(no rows filtered, positions unchanged)\n"
+            )
         base = self.trainer.data_collator or default_data_collator
         self.trainer.data_collator = RowIdRecordingCollator(base, recorder)
 

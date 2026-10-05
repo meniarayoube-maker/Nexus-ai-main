@@ -80,13 +80,17 @@ class CompositionRecorder:
     history in an append-only file.
     """
 
-    def __init__(self, sidecar_path: str) -> None:
+    def __init__(self, sidecar_path: str, expected_rows: Optional[int] = None) -> None:
         parent = os.path.dirname(os.path.abspath(sidecar_path))
         os.makedirs(parent, exist_ok = True)
         self._path = sidecar_path
         self._handle = open(sidecar_path, "a", encoding = "utf-8")
         self._capturing = False
         self._pending: List[List[int]] = []
+        # Row count at stamp time. Used after transforms that may drop columns
+        # (Unsloth response masking) to decide whether a positional re-stamp is
+        # still exact (same length) or must be refused (rows were filtered).
+        self.expected_rows = expected_rows
 
     @property
     def path(self) -> str:
@@ -235,6 +239,49 @@ def stamp_row_ids(
             f"(found: {names})"
         )
     return [text_field, ROW_ID_COLUMN], list(range(int(num_rows)))
+
+
+def ensure_row_ids(
+    dataset: Any,
+    expected_rows: Optional[int],
+) -> Tuple[Any, str]:
+    """Re-check the id column after transforms that may drop columns.
+
+    Unsloth's ``train_on_responses_only`` masking drops every non-model
+    column from ``trainer.train_dataset`` — including a ``__row_id__`` stamped
+    earlier. Without this check the collator would silently record empty rows.
+
+    Returns ``(dataset, action)`` with ``action`` one of ``"present"`` (column
+    survived, dataset untouched) or ``"restamped"`` (column was dropped but no
+    row was filtered, so a positional re-stamp is exact: filtering preserves
+    order, and equal length means equal positions).
+
+    Raises ``ValueError`` when attribution would be wrong: unsized dataset,
+    row count changed (rows were filtered out), or no way to re-add the column.
+    Fail fast, never record unattributable steps.
+    """
+    columns = list(getattr(dataset, "column_names", None) or [])
+    if ROW_ID_COLUMN in columns:
+        return dataset, "present"
+    try:
+        current_len = len(dataset)
+    except Exception as exc:
+        raise ValueError(
+            "Batch composition tracking lost __row_id__ after response "
+            f"masking and the dataset has no length to re-stamp: {exc}"
+        ) from exc
+    if expected_rows is None or int(current_len) != int(expected_rows):
+        raise ValueError(
+            "Batch composition tracking lost __row_id__ after response "
+            f"masking and rows were filtered ({expected_rows} -> "
+            f"{current_len}); refusing to record unattributable steps."
+        )
+    if not hasattr(dataset, "add_column"):
+        raise ValueError(
+            "Batch composition tracking lost __row_id__ after response "
+            "masking and the dataset cannot be re-stamped."
+        )
+    return dataset.add_column(ROW_ID_COLUMN, list(range(int(current_len)))), "restamped"
 
 
 def prune_columns_for_tracking(

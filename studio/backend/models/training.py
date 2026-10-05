@@ -864,6 +864,26 @@ class TrainingRunDetailResponse(BaseModel):
     metrics: TrainingRunMetrics
 
 
+class BatchCompositionRecord(BaseModel):
+    """One optimizer step's batch composition (step -> example row ids)."""
+
+    step: int
+    micro_batches: List[List[int]] = Field(default_factory = list)
+    row_ids: List[int] = Field(default_factory = list)
+    num_micro_batches: int = 0
+    num_rows: int = 0
+
+
+class BatchCompositionResponse(BaseModel):
+    """Batch composition sidecar for a run. ``exists`` is False when the run
+    never tracked composition (flag off or unsupported path) — not an error."""
+
+    run_id: str
+    exists: bool
+    records: List[BatchCompositionRecord] = Field(default_factory = list)
+    total_records: int = 0
+
+
 class TrainingRunDeleteResponse(BaseModel):
     """Response for deleting a training run."""
 

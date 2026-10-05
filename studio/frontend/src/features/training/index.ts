@@ -72,10 +72,13 @@ export type {
   TrainingRunMetrics,
   TrainingRunDetailResponse,
   TrainingRunDeleteResponse,
+  BatchCompositionRecord,
+  BatchCompositionResponse,
 } from "./types/history";
 export {
   listTrainingRuns,
   getTrainingRun,
+  getBatchComposition,
   deleteTrainingRun,
   renameTrainingRun,
   restoreTrainingRunFromKaggle,

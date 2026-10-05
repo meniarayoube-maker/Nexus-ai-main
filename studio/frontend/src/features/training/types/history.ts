@@ -58,3 +58,18 @@ export interface TrainingRunDeleteResponse {
   artifacts_deleted: boolean;
   artifacts_kept_reason: "shared_output_dir" | "purge_failed" | null;
 }
+
+export interface BatchCompositionRecord {
+  step: number;
+  micro_batches: number[][];
+  row_ids: number[];
+  num_micro_batches: number;
+  num_rows: number;
+}
+
+export interface BatchCompositionResponse {
+  run_id: string;
+  exists: boolean;
+  records: BatchCompositionRecord[];
+  total_records: number;
+}

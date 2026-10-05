@@ -195,6 +195,7 @@ export function LiveTrainingView(): ReactElement {
           totalSteps={viewData.totalSteps}
           outputDir={viewData.outputDir}
           isTrainingRunning={viewData.isTrainingRunning}
+          runId={runtime.jobId}
         />
         <ChartsSection
           currentStep={viewData.currentStep}

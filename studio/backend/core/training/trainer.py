@@ -4130,6 +4130,17 @@ class UnslothTrainer:
             # on_step_begin fires for their step, so a begin/end gate would
             # record nothing (every batch arrives while capture is still off).
             # Recording is unconditional; eval batches carry no id column.
+            def on_train_begin(self, args, state, control, **kwargs):
+                # _preflight_first_batch pulls real batches through this same
+                # wrapped collator before train() starts; drop them so step 1
+                # records only its own micro-batches.
+                dropped = recorder.reset()
+                if dropped:
+                    logger.info(
+                        f"Batch composition: cleared {dropped} pre-train "
+                        "micro-batch(es) before step 1\n"
+                    )
+
             def on_step_end(self, args, state, control, **kwargs):
                 recorder.finalize_optimizer_step(state.global_step)
 

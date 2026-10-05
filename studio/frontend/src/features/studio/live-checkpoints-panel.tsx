@@ -12,19 +12,23 @@
  */
 
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
+  getBatchComposition,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
 import {
+  Download01Icon,
   FloppyDiskIcon,
   Folder01Icon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 type LiveCheckpointsPanelProps = {
@@ -32,9 +36,18 @@ type LiveCheckpointsPanelProps = {
   totalSteps: number;
   outputDir: string | null;
   isTrainingRunning: boolean;
+  /** Run/job id used to fetch the batch-composition sidecar. */
+  runId?: string | null;
   saveStepsOverride?: number | null;
   className?: string;
 };
+
+type CompositionState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; records: number }
+  | { status: "empty" }
+  | { status: "error"; message: string };
 
 function buildCheckpointSteps(
   currentStep: number,
@@ -63,12 +76,73 @@ export function LiveCheckpointsPanel({
   totalSteps,
   outputDir,
   isTrainingRunning,
+  runId,
   saveStepsOverride,
   className,
 }: LiveCheckpointsPanelProps) {
   const { stopTrainingRun } = useTrainingActions();
   const stopRequested = useTrainingRuntimeStore((s) => s.stopRequested);
   const [busy, setBusy] = useState(false);
+  const [composition, setComposition] = useState<CompositionState>({
+    status: "idle",
+  });
+  const compositionAbort = useRef<AbortController | null>(null);
+
+  // Fresh run/output dir => fresh composition state.
+  useEffect(() => {
+    compositionAbort.current?.abort();
+    compositionAbort.current = null;
+    setComposition({ status: "idle" });
+  }, [runId, outputDir]);
+
+  useEffect(
+    () => () => {
+      compositionAbort.current?.abort();
+    },
+    [],
+  );
+
+  const handleCompositionDownload = async () => {
+    if (!runId || composition.status === "loading") return;
+    compositionAbort.current?.abort();
+    const controller = new AbortController();
+    compositionAbort.current = controller;
+    setComposition({ status: "loading" });
+    try {
+      const res = await getBatchComposition(runId, controller.signal);
+      if (controller.signal.aborted || compositionAbort.current !== controller) {
+        return;
+      }
+      if (!res.exists || res.records.length === 0) {
+        setComposition({ status: "empty" });
+        return;
+      }
+      const lines = res.records.map((record) =>
+        JSON.stringify({
+          step: record.step,
+          micro_batches: record.micro_batches,
+          row_ids: record.row_ids,
+          num_micro_batches: record.num_micro_batches,
+          num_rows: record.num_rows,
+        }),
+      );
+      await downloadFile(
+        `${lines.join("\n")}\n`,
+        `batch_composition_${runId}.jsonl`,
+        "application/jsonl",
+      );
+      setComposition({ status: "ready", records: res.total_records });
+    } catch (err) {
+      if (controller.signal.aborted || isDownloadCancelled(err)) {
+        setComposition({ status: "idle" });
+        return;
+      }
+      setComposition({
+        status: "error",
+        message: err instanceof Error ? err.message : "Download failed.",
+      });
+    }
+  };
 
   const formSaveSteps = useTrainingConfigStore(
     useShallow((s) => s.saveSteps ?? 0),
@@ -149,7 +223,7 @@ export function LiveCheckpointsPanel({
             icon={Folder01Icon}
             className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-muted-foreground">Save location</div>
             <div className="break-all font-mono text-ui-11 text-foreground/90">
               {outputDir}
@@ -158,6 +232,42 @@ export function LiveCheckpointsPanel({
               Checkpoints are folders like{" "}
               <span className="font-mono">checkpoint-70</span> inside this path.
             </p>
+            {runId && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={composition.status === "loading"}
+                  onClick={() => void handleCompositionDownload()}
+                  className="gap-1.5 h-7 text-ui-11"
+                >
+                  {composition.status === "loading" ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+                  )}
+                  {composition.status === "loading"
+                    ? "Loading…"
+                    : "Batch composition"}
+                </Button>
+                {composition.status === "ready" && (
+                  <span className="text-ui-11 text-muted-foreground">
+                    {composition.records.toLocaleString()} steps downloaded
+                  </span>
+                )}
+                {composition.status === "empty" && (
+                  <span className="text-ui-11 text-muted-foreground">
+                    No composition tracked for this run (tracking is opt-in).
+                  </span>
+                )}
+                {composition.status === "error" && (
+                  <span className="text-ui-11 text-destructive">
+                    {composition.message}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

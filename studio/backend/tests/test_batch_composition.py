@@ -21,6 +21,7 @@ from core.training.composition_log import (
     join_with_losses,
     prune_columns_for_tracking,
     read_composition_records,
+    read_run_composition,
     stamp_row_ids,
     validate_tracking_prerequisites,
 )
@@ -112,6 +113,27 @@ def test_recording_needs_no_capture_gate_batches_collate_before_step_begin(tmp_p
     finally:
         recorder.close()
     assert record["row_ids"] == [0]
+
+
+def test_pretrain_pulls_are_cleared_before_step_one(tmp_path):
+    # Regression for the polluted step-1 record: _preflight_first_batch pulls
+    # real batches through the wrapped collator before train() starts (then
+    # train() re-iterates from row 0, so the same rows repeat). Clearing at
+    # train begin keeps step 1 exact.
+    recorder = _recorder(tmp_path)
+    try:
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+        collator([{"input_ids": [1], ROW_ID_COLUMN: 3}])
+        collator([{"input_ids": [2], ROW_ID_COLUMN: 0}])
+        collator([{"input_ids": [3], ROW_ID_COLUMN: 1}])
+        dropped = recorder.reset()  # on_train_begin
+        assert dropped == 3
+        collator([{"input_ids": [1], ROW_ID_COLUMN: 3}])
+        record = recorder.finalize_optimizer_step(1)
+    finally:
+        recorder.close()
+    assert record["micro_batches"] == [[3]]
+    assert record["row_ids"] == [3]
 
 
 def test_evaluate_boundary_resets_stale_buffer(tmp_path):
@@ -239,6 +261,25 @@ def test_masking_dropped_rows_is_refused_not_guessed():
         ensure_row_ids(dataset, expected_rows = 8)
     with pytest.raises(ValueError, match = "rows were filtered"):
         ensure_row_ids(dataset, expected_rows = None)
+
+
+def test_read_run_composition_serving_helper(tmp_path):
+    # Missing dir / missing file / empty dir => not exists, never raises.
+    assert read_run_composition(None) == (False, [], 0)
+    assert read_run_composition("") == (False, [], 0)
+    assert read_run_composition(str(tmp_path)) == (False, [], 0)
+    # With a sidecar: records back, capped, total preserved.
+    sidecar = tmp_path / "batch_composition.jsonl"
+    sidecar.write_text(
+        '{"step": 1, "row_ids": [0]}\n{"step": 2, "row_ids": [1]}\nnot-json\n',
+        encoding = "utf-8",
+    )
+    exists, records, total = read_run_composition(str(tmp_path))
+    assert exists is True
+    assert total == 2
+    assert [r["step"] for r in records] == [1, 2]
+    exists, records, total = read_run_composition(str(tmp_path), limit = 1)
+    assert (exists, len(records), total) == (True, 1, 2)
 
 
 def test_stamp_and_prune_helpers():

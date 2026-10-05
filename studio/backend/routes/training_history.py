@@ -23,6 +23,7 @@ from core.training.run_config_snapshot import (
     load_run_config_snapshot,
 )
 from models import (
+    BatchCompositionResponse,
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
     TrainingRunListResponse,
@@ -337,6 +338,37 @@ async def get_training_run_detail(
         run = summary,
         config = config,
         metrics = TrainingRunMetrics(**metrics_data),
+    )
+
+
+@router.get("/runs/{run_id}/batch-composition", response_model = BatchCompositionResponse)
+async def get_run_batch_composition(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
+):
+    """Batch composition sidecar (step -> example row ids) for a run.
+
+    The output_dir comes from the run record itself, never from user input,
+    so no path traversal is possible. Runs that never tracked composition
+    return ``exists=False`` (not an error): the flag is opt-in and several
+    paths (packing, streaming, CPT) refuse it by design.
+    """
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
+
+    from core.training.composition_log import read_run_composition
+
+    output_dir = (run.get("output_dir") or "").strip()
+    exists, records, total = await asyncio.to_thread(
+        read_run_composition, output_dir
+    )
+    return BatchCompositionResponse(
+        run_id = run_id,
+        exists = exists,
+        records = records,
+        total_records = total,
     )
 
 

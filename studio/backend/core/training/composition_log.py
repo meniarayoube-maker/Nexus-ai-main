@@ -143,6 +143,27 @@ class CompositionRecorder:
             self._handle.close()
 
 
+SIDECAR_FILENAME = "batch_composition.jsonl"
+
+
+def read_run_composition(
+    output_dir: Optional[str], limit: int = 50000
+) -> Tuple[bool, List[Dict[str, Any]], int]:
+    """Read a run's sidecar for API serving. Never raises for missing files.
+
+    Returns ``(exists, records, total)`` with ``records`` capped at ``limit``
+    so a pathological file cannot blow up a response. ``output_dir`` comes
+    from the run record itself, never from user input.
+    """
+    if not (output_dir or "").strip():
+        return False, [], 0
+    sidecar = os.path.join(str(output_dir).strip(), SIDECAR_FILENAME)
+    records = read_composition_records(sidecar)
+    if not records:
+        return False, [], 0
+    return True, records[: max(0, int(limit))], len(records)
+
+
 def read_composition_records(sidecar_path: str) -> List[Dict[str, Any]]:
     """Read back every step record (tolerates a torn last line)."""
     records: List[Dict[str, Any]] = []

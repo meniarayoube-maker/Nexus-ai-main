@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
+  BatchCompositionResponse,
   TrainingRunDeleteResponse,
   TrainingRunDetailResponse,
   TrainingRunListResponse,
@@ -85,6 +86,17 @@ export async function getTrainingRun(
     { signal },
   );
   return parseJson<TrainingRunDetailResponse>(response);
+}
+
+export async function getBatchComposition(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<BatchCompositionResponse> {
+  const response = await authFetch(
+    `/api/train/runs/${encodeURIComponent(runId)}/batch-composition`,
+    { signal },
+  );
+  return parseJson<BatchCompositionResponse>(response);
 }
 
 export async function deleteTrainingRun(

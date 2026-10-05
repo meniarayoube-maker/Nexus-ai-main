@@ -6,6 +6,7 @@ import { hubTokenHeader } from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   CheckFormatResponse,
+  RenderPreviewResponse,
   UploadDatasetResponse,
 } from "../types/datasets";
 
@@ -183,6 +184,68 @@ export async function aiAssistMapping({
 
   if (!res.ok) {
     throw new Error(await readFastApiError(res, "AI assist failed"));
+  }
+
+  return res.json();
+}
+
+// ── Render preview (exact training text) ──
+
+export type PreviewTrainingRenderArgs = {
+  datasetSource: "huggingface" | "upload";
+  datasetName: string | null;
+  subset?: string | null;
+  split?: string | null;
+  uploadedFile?: string | null;
+  datasetFormat: string;
+  customFormatMapping?: Record<string, unknown> | null;
+  modelName: string | null;
+  modelLocalPath?: string | null;
+  hfToken: string | null;
+  maxSeqLength: number;
+  numSamples?: number;
+  signal?: AbortSignal;
+};
+
+export async function previewTrainingRender({
+  datasetSource,
+  datasetName,
+  subset,
+  split,
+  uploadedFile,
+  datasetFormat,
+  customFormatMapping,
+  modelName,
+  modelLocalPath,
+  hfToken,
+  maxSeqLength,
+  numSamples = 3,
+  signal,
+}: PreviewTrainingRenderArgs): Promise<RenderPreviewResponse> {
+  const res = await authFetch("/api/train/dataset-render-preview", {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      dataset_source: datasetSource,
+      hf_dataset: datasetName || undefined,
+      subset: subset || undefined,
+      train_split: split || "train",
+      local_datasets: uploadedFile ? [uploadedFile] : [],
+      format_type: datasetFormat,
+      custom_format_mapping: customFormatMapping ?? undefined,
+      model_name: modelName,
+      model_local_path: modelLocalPath || undefined,
+      hf_token: hfToken,
+      max_seq_length: maxSeqLength,
+      num_samples: numSamples,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await readFastApiError(res, "Render preview failed"));
   }
 
   return res.json();

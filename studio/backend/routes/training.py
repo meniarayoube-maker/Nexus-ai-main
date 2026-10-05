@@ -112,6 +112,8 @@ from models.training import (
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
+    RenderPreviewRequest,
+    RenderPreviewResponse,
     TRAINING_REQUEST_ID_PATTERN,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
@@ -1066,6 +1068,43 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this
     # route.
     return await asyncio.to_thread(get_visible_gpu_utilization)
+
+
+@router.post("/dataset-render-preview", response_model = RenderPreviewResponse)
+async def preview_dataset_render(
+    request: RenderPreviewRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Render the exact training text for a few sample rows (Pilot, text-only v1).
+
+    Runs the same ``format_and_template_dataset`` pipeline training runs over a
+    tiny slice — no training, no model weights — and reports raw fields, final
+    text, tokenizer input, and a metadata-leak audit per sample.
+    """
+    from core.training.render_preview import render_preview_samples
+
+    try:
+        result = await asyncio.to_thread(
+            render_preview_samples,
+            dataset_source = request.dataset_source,
+            model_name = request.model_name,
+            num_samples = request.num_samples,
+            hf_dataset = request.hf_dataset,
+            subset = request.subset,
+            train_split = request.train_split,
+            local_datasets = request.local_datasets,
+            format_type = request.format_type,
+            custom_format_mapping = request.custom_format_mapping,
+            model_local_path = request.model_local_path,
+            hf_token = request.hf_token,
+            trust_remote_code = request.trust_remote_code,
+            max_seq_length = request.max_seq_length,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code = 404, detail = str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    return RenderPreviewResponse.model_validate(result)
 
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)

@@ -17,9 +17,11 @@ import {
   checkDatasetFormat,
   clearDeletedDataset,
   isRawTextDatasetFormat,
+  type PreviewTrainingRenderArgs,
   useTrainingActions,
   useTrainingConfigStore,
 } from "@/features/training";
+import { DatasetRenderPreviewSection } from "./dataset-render-preview-section";
 import { useT } from "@/i18n";
 import type { DatasetSource } from "@/types/training";
 import {
@@ -170,7 +172,10 @@ export function DatasetPreviewDialog({
     setDatasetAdvisorFields,
     datasetAdvisorNotification,
     datasetSystemPrompt,
+    datasetLabelMapping,
     selectedModel,
+    modelLocalPath,
+    contextLength,
     modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
@@ -180,7 +185,10 @@ export function DatasetPreviewDialog({
       setDatasetAdvisorFields: s.setDatasetAdvisorFields,
       datasetAdvisorNotification: s.datasetAdvisorNotification,
       datasetSystemPrompt: s.datasetSystemPrompt,
+      datasetLabelMapping: s.datasetLabelMapping,
       selectedModel: s.selectedModel,
+      modelLocalPath: s.modelLocalPath,
+      contextLength: s.contextLength,
       modelType: s.modelType,
     })),
   );
@@ -235,15 +243,87 @@ export function DatasetPreviewDialog({
     setAiError(null);
   }, []);
 
+  // Bumps whenever the dialog closes so the render-preview section remounts
+  // with fresh state on the next open (same inputs would otherwise reuse it).
+  const [renderEpoch, setRenderEpoch] = useState(0);
+
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (!nextOpen) {
         setPreviewResult(null);
         cancelAiAssist();
+        setRenderEpoch((epoch) => epoch + 1);
       }
       onOpenChange(nextOpen);
     },
     [cancelAiAssist, onOpenChange],
+  );
+
+  // ── Rendered training text (exact) ──────────────────────────────
+  // Same custom mapping construction as the training payload (mappers.ts):
+  // user column roles plus conversion-advisor metadata under __ keys.
+  const renderDisabledReason = useMemo<string | null>(() => {
+    if (effectiveIsVlm || effectiveIsAudio) {
+      return "Rendered-text preview is text-only in v1 (vision/audio use a different pipeline).";
+    }
+    if (datasetSource !== "huggingface" && datasetSource !== "upload") {
+      return "Rendered-text preview supports Hugging Face and upload datasets in v1.";
+    }
+    if (!selectedModel) {
+      return "Select a model first — the preview uses its chat template and tokenizer.";
+    }
+    return null;
+  }, [effectiveIsVlm, effectiveIsAudio, datasetSource, selectedModel]);
+
+  const renderArgs = useMemo<PreviewTrainingRenderArgs | null>(() => {
+    if (renderDisabledReason) return null;
+    const mapping: Record<string, unknown> | undefined =
+      Object.keys(manualMapping).length > 0 ? { ...manualMapping } : undefined;
+    const hasAdvisorMeta =
+      (datasetSystemPrompt?.length ?? 0) > 0 ||
+      Object.keys(datasetLabelMapping ?? {}).length > 0;
+    if (mapping && hasAdvisorMeta) {
+      if (datasetSystemPrompt) {
+        mapping.__system_prompt = datasetSystemPrompt;
+      }
+      if (Object.keys(datasetLabelMapping ?? {}).length > 0) {
+        mapping.__label_mapping = datasetLabelMapping;
+      }
+    }
+    return {
+      datasetSource:
+        datasetSource === "huggingface" ? "huggingface" : "upload",
+      datasetName,
+      subset: datasetSubset,
+      split: datasetSplit,
+      uploadedFile: datasetSource === "upload" ? datasetName : null,
+      datasetFormat,
+      customFormatMapping: mapping ?? null,
+      modelName: selectedModel,
+      modelLocalPath,
+      hfToken,
+      maxSeqLength: contextLength,
+      numSamples: 3,
+    };
+  }, [
+    renderDisabledReason,
+    manualMapping,
+    datasetSystemPrompt,
+    datasetLabelMapping,
+    datasetSource,
+    datasetName,
+    datasetSubset,
+    datasetSplit,
+    datasetFormat,
+    selectedModel,
+    modelLocalPath,
+    hfToken,
+    contextLength,
+  ]);
+
+  const renderArgsKey = useMemo(
+    () => `${renderEpoch}:${JSON.stringify(renderArgs)}`,
+    [renderEpoch, renderArgs],
   );
 
   const handleAiAssist = useCallback(async () => {
@@ -649,6 +729,13 @@ export function DatasetPreviewDialog({
                   }
                 />
               </div>
+
+              <DatasetRenderPreviewSection
+                key={renderArgsKey}
+                argsKey={renderArgsKey}
+                args={renderArgs}
+                disabledReason={renderDisabledReason}
+              />
 
               {readyForTraining && (
                 <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">

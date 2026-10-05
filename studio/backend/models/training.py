@@ -1364,3 +1364,91 @@ class DiffusionDatasetImportResponse(BaseModel):
     imported: int
     license: str
     source_repo: str
+
+
+class RenderPreviewRequest(BaseModel):
+    """Render the exact training text for a few sample rows (Pilot, text-only v1).
+
+    Mirrors the dataset/model fields of ``TrainingStartRequest`` so the preview
+    runs the same formatting pipeline training runs. No training is started.
+    """
+
+    dataset_source: Literal["huggingface", "upload"] = Field(
+        ...,
+        description = "Dataset source. v1 supports 'huggingface' and 'upload' only.",
+    )
+    hf_dataset: Optional[str] = Field(None, description = "HF dataset id (huggingface source)")
+    subset: Optional[str] = Field(None, description = "HF dataset config/subset")
+    train_split: str = Field("train", description = "Split to preview")
+    local_datasets: List[str] = Field(
+        default_factory = list,
+        description = "Upload filenames (upload source), same values as TrainingStartRequest",
+    )
+    format_type: str = Field("auto", description = "Dataset format selector")
+    custom_format_mapping: Optional[Dict[str, Any]] = Field(
+        None, description = "Manual column-role mapping"
+    )
+    model_name: str = Field(..., description = "Model id used for the chat template/tokenizer")
+    model_local_path: Optional[str] = Field(
+        None, description = "Local snapshot path when the model is cached on device"
+    )
+    hf_token: Optional[str] = Field(None, description = "HF token for gated models/datasets")
+    trust_remote_code: bool = Field(False, description = "Allow custom tokenizer code")
+    max_seq_length: int = Field(
+        2048, gt = 0, le = 1_000_000, description = "Truncation cap reported per sample"
+    )
+    num_samples: int = Field(3, ge = 1, le = 5, description = "Sample rows to render")
+
+    @model_validator(mode = "after")
+    def _check_source_fields(self) -> "RenderPreviewRequest":
+        if self.dataset_source == "huggingface" and not (self.hf_dataset or "").strip():
+            raise ValueError("hf_dataset is required for dataset_source='huggingface'")
+        if self.dataset_source == "upload" and not [
+            f for f in self.local_datasets if str(f or "").strip()
+        ]:
+            raise ValueError("local_datasets is required for dataset_source='upload'")
+        if not (self.model_name or "").strip():
+            raise ValueError("model_name is required")
+        return self
+
+
+class RenderPreviewMetadataAudit(BaseModel):
+    """Whether one metadata column's value leaked into the rendered training text."""
+
+    column: str
+    value_preview: str
+    leaked_into_text: bool
+
+
+class RenderPreviewSample(BaseModel):
+    """One sample row: raw fields, final text, tokenizer input, metadata audit."""
+
+    index: int
+    raw_fields: Dict[str, Any]
+    columns_in_row: List[str]
+    rendered_text: str
+    rendered_char_count: int
+    rendered_truncated: bool
+    token_count_full: int
+    token_count_capped: int
+    cap_applied_at: int
+    input_ids_head: List[int]
+    input_ids_tail: List[int]
+    decoded_text: str
+    roundtrip_exact: bool
+    metadata_audit: List[RenderPreviewMetadataAudit]
+
+
+class RenderPreviewResponse(BaseModel):
+    """Result of rendering the exact training text for sample rows."""
+
+    success: bool
+    samples: List[RenderPreviewSample]
+    columns_in: List[str]
+    columns_out: List[str]
+    detected_format: str
+    final_format: str
+    warnings: List[str]
+    errors: List[str]
+    tokenizer_source: Optional[str] = None
+    total_rows: Optional[int] = None

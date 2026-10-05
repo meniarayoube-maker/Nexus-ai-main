@@ -40,11 +40,20 @@ export {
   DatasetFormatError,
   aiAssistMapping,
   checkDatasetFormat,
+  previewTrainingRender,
+} from "./api/datasets-api";
+export type { PreviewTrainingRenderArgs } from "./api/datasets-api";
+export {
   uploadNativeTrainingDataset,
   uploadTrainingDataset,
 } from "./api/datasets-api";
 export { clearDeletedDataset } from "./stores/training-config-store";
-export type { CheckFormatResponse } from "./types/datasets";
+export type {
+  CheckFormatResponse,
+  RenderPreviewMetadataAudit,
+  RenderPreviewResponse,
+  RenderPreviewSample,
+} from "./types/datasets";
 export type {
   AdvancedSettingsBaseline,
   LoraVariant,

@@ -7,6 +7,7 @@ Integrates Unsloth training with the FastAPI backend.
 """
 
 import gc
+import inspect
 import os
 import sys
 import types
@@ -106,6 +107,57 @@ def _build_report_targets(training_args) -> list[str] | str:
     if training_args.get("enable_tensorboard", False):
         report_to.append("tensorboard")
     return report_to or "none"
+
+
+_sft_field_names_cache: dict[int, set[str] | None] = {}
+
+
+def _config_cls_field_names(cls) -> set[str] | None:
+    """Field names accepted by a training-args class, or None if it takes **kwargs."""
+    try:
+        params = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        return None
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return None
+    cached = _sft_field_names_cache.get(id(cls))
+    if cached is not None:
+        return cached
+    names = set(params)
+    _sft_field_names_cache[id(cls)] = names
+    return names
+
+
+def _adapt_length_kwargs(base: dict, cls) -> dict:
+    """Translate max_seq_length <-> max_length for the installed TRL/Unsloth class.
+
+    Pristine TRL SFTConfig (0.22.x-1.x) declares max_length but not max_seq_length,
+    while Unsloth's patched subclass re-adds max_seq_length. Passing an unsupported
+    key raises ``TypeError: ... unexpected keyword argument 'max_seq_length'``.
+    Always send at least the key the target class understands, keeping both
+    consistent when both are supported.
+    """
+    adapted = dict(base)
+    names = _config_cls_field_names(cls)
+    if names is None:
+        return adapted
+    has_seq = "max_seq_length" in names
+    has_len = "max_length" in names
+    if has_seq and has_len:
+        if adapted.get("max_seq_length") is not None and adapted.get("max_length") is None:
+            adapted["max_length"] = adapted["max_seq_length"]
+        elif adapted.get("max_length") is not None and adapted.get("max_seq_length") is None:
+            adapted["max_seq_length"] = adapted["max_length"]
+        return adapted
+    if not has_seq and has_len and "max_seq_length" in adapted:
+        if adapted.get("max_length") is None:
+            adapted["max_length"] = adapted["max_seq_length"]
+        del adapted["max_seq_length"]
+        return adapted
+    if has_seq and not has_len and "max_length" in adapted and "max_seq_length" not in adapted:
+        adapted["max_seq_length"] = adapted.pop("max_length")
+        return adapted
+    return adapted
 
 
 def _verbose_logging_requested() -> bool:
@@ -4479,7 +4531,7 @@ class UnslothTrainer:
                     "train_dataset": train_dataset,
                     "processing_class": processing_class,
                     "data_collator": data_collator,
-                    "args": SFTConfig(**config_args),
+                    "args": SFTConfig(**_adapt_length_kwargs(config_args, SFTConfig)),
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
@@ -4492,7 +4544,7 @@ class UnslothTrainer:
                     "train_dataset": train_dataset,
                     "processing_class": self.tokenizer,
                     "data_collator": data_collator,
-                    "args": SFTConfig(**config_args),
+                    "args": SFTConfig(**_adapt_length_kwargs(config_args, SFTConfig)),
                 }
                 if eval_dataset is not None:
                     trainer_kwargs["eval_dataset"] = eval_dataset
@@ -4529,7 +4581,7 @@ class UnslothTrainer:
                     )
                     cpt_args = _UnslothTrainingArguments(
                         embedding_learning_rate = embedding_lr,
-                        **config_args,
+                        **_adapt_length_kwargs(config_args, _UnslothTrainingArguments),
                     )
                     if config_args.get("packing", False):
                         cpt_args.packing_strategy = "wrapped"
@@ -4550,7 +4602,7 @@ class UnslothTrainer:
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": SFTConfig(**config_args),
+                        "args": SFTConfig(**_adapt_length_kwargs(config_args, SFTConfig)),
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

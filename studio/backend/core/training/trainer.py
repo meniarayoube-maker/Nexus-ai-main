@@ -4027,6 +4027,105 @@ class UnslothTrainer:
             f"columns are mapped correctly for '{model}'."
         )
 
+    def _setup_batch_composition_tracking(
+        self,
+        dataset,
+        training_args: dict,
+        config_args: dict,
+        online_enabled: bool,
+    ):
+        """Opt-in pilot diagnostic: stamp ``__row_id__`` and open the sidecar.
+
+        Returns ``(recorder, train_dataset)``. When the flag is off, returns
+        ``(None, <original train dataset>)`` with zero side effects. Raises
+        ``ValueError`` (fail fast, never silent) outside the supported scope:
+        non-CPT text SFT, ``packing=False``, non-streaming, eager tokenization.
+        Prunes every non-text column so the base collator later sees exactly
+        what it saw before tracking existed.
+        """
+        from core.training.composition_log import (
+            ROW_ID_COLUMN,
+            CompositionRecorder,
+            prune_columns_for_tracking,
+            stamp_row_ids,
+            validate_tracking_prerequisites,
+        )
+
+        original = dataset["dataset"] if isinstance(dataset, dict) else dataset
+        if not bool(training_args.get("track_batch_composition", False)):
+            return None, original
+        if bool(training_args.get("is_cpt", False)):
+            raise ValueError(
+                "Batch composition tracking is text-SFT only; CPT uses its "
+                "own trainer path."
+            )
+        train_ds = original
+        validate_tracking_prerequisites(
+            packing = bool(config_args.get("packing", False)),
+            is_streaming = bool(detect_streaming_dataset(train_ds)),
+            online_tokenization_enabled = bool(online_enabled),
+        )
+        try:
+            num_rows = len(train_ds)
+        except Exception as exc:
+            raise ValueError(
+                f"Batch composition tracking needs a sized training dataset: {exc}"
+            ) from exc
+        if num_rows <= 0:
+            raise ValueError("Batch composition tracking needs a non-empty training dataset")
+        existing = list(getattr(train_ds, "column_names", None) or [])
+        if ROW_ID_COLUMN in existing:
+            raise ValueError("Training dataset is already stamped with __row_id__")
+        keep, ids = stamp_row_ids(existing, num_rows)
+        train_ds = train_ds.add_column(ROW_ID_COLUMN, ids)
+        train_ds, pruned = prune_columns_for_tracking(train_ds, keep)
+        if isinstance(dataset, dict):
+            dataset["dataset"] = train_ds
+        output_dir = config_args.get("output_dir")
+        if not output_dir:
+            raise ValueError(
+                "Batch composition tracking needs config_args['output_dir'] for the sidecar file"
+            )
+        config_args["remove_unused_columns"] = False
+        recorder = CompositionRecorder(os.path.join(str(output_dir), "batch_composition.jsonl"))
+        logger.info(
+            f"Batch composition tracking on: {num_rows} rows, sidecar={recorder.path}"
+            + (f", pruned columns={pruned}" if pruned else "")
+            + "\n"
+        )
+        return recorder, train_ds
+
+    def _enable_batch_composition_capture(self, recorder) -> None:
+        """Wrap the built trainer's collator and gate capture to train steps.
+
+        Must run after ``apply_completion_masking`` (which may rebuild trainer
+        state) and covers eval automatically: the eval split is never stamped,
+        and capture is off outside optimizer steps anyway.
+        """
+        from transformers import TrainerCallback, default_data_collator
+
+        from core.training.composition_log import RowIdRecordingCollator
+
+        base = self.trainer.data_collator or default_data_collator
+        self.trainer.data_collator = RowIdRecordingCollator(base, recorder)
+
+        class _CompositionCaptureCallback(TrainerCallback):
+            def on_step_begin(self, args, state, control, **kwargs):
+                recorder.set_capturing(True)
+
+            def on_step_end(self, args, state, control, **kwargs):
+                try:
+                    recorder.finalize_optimizer_step(state.global_step)
+                finally:
+                    recorder.set_capturing(False)
+
+            def on_train_end(self, args, state, control, **kwargs):
+                recorder.set_capturing(False)
+                recorder.close()
+
+        self.trainer.add_callback(_CompositionCaptureCallback())
+        logger.info(f"Batch composition capture armed (sidecar={recorder.path})\n")
+
     def _train_worker(self, dataset: Dataset | dict, **training_args):
         """Worker function for training (runs in separate thread).
 
@@ -4517,6 +4616,7 @@ class UnslothTrainer:
 
             logger.info("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
+            composition_tracker = None
             if self.is_audio_vlm and not raw_text_mode:
                 # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset.
                 # Notebook uses processing_class=processor.tokenizer; raw-text runs use the text path.
@@ -4597,10 +4697,18 @@ class UnslothTrainer:
                         trainer_kwargs["eval_dataset"] = eval_dataset
                     self.trainer = _UnslothCPTTrainer(**trainer_kwargs)
                 else:
+                    composition_tracker, tracked_train_dataset = (
+                        self._setup_batch_composition_tracking(
+                            dataset = dataset,
+                            training_args = training_args,
+                            config_args = config_args,
+                            online_enabled = bool(online_decision.enabled),
+                        )
+                    )
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
-                        "train_dataset": dataset["dataset"],
+                        "train_dataset": tracked_train_dataset,
                         "data_collator": data_collator,
                         "args": SFTConfig(**_adapt_length_kwargs(config_args, SFTConfig)),
                     }
@@ -4719,6 +4827,8 @@ class UnslothTrainer:
 
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
+            if composition_tracker is not None:
+                self._enable_batch_composition_capture(composition_tracker)
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure
             # duplication in a log that has no terminal. --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)

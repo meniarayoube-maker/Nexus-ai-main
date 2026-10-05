@@ -122,6 +122,14 @@ class TrainingStartRequest(BaseModel):
             "Relative paths resolve under the Studio outputs root."
         ),
     )
+    track_batch_composition: bool = Field(
+        False,
+        description = (
+            "Pilot diagnostic: record which dataset rows feed each optimizer "
+            "step (batch composition sidecar). Text path with packing=False "
+            "only; refused otherwise. Default off: zero effect on training."
+        ),
+    )
     storage_target: Optional[StorageTarget] = Field(
         None,
         description = (

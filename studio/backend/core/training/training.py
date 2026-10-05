@@ -230,6 +230,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
         "packing": values.get("packing", False),
+        "track_batch_composition": values.get("track_batch_composition", False),
         "optim": values.get("optim", "adamw_8bit"),
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),

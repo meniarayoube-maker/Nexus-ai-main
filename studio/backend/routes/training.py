@@ -1508,6 +1508,7 @@ async def start_training(
             "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
+            "track_batch_composition": bool(getattr(request, "track_batch_composition", False)),
             "optim": request.optim,
             "lr_scheduler_type": request.lr_scheduler_type,
             "use_lora": request.use_lora,

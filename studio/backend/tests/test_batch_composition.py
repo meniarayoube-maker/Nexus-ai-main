@@ -44,7 +44,6 @@ def _recorder(tmp_path):
 def test_row_id_never_reaches_model(tmp_path):
     base = _FakeBaseCollator()
     recorder = _recorder(tmp_path)
-    recorder.set_capturing(True)
     collator = RowIdRecordingCollator(base, recorder)
     try:
         out = collator(
@@ -53,6 +52,7 @@ def test_row_id_never_reaches_model(tmp_path):
                 {"input_ids": [3], ROW_ID_COLUMN: 9},
             ]
         )
+        record = recorder.finalize_optimizer_step(3)
     finally:
         recorder.close()
     assert out == {"batched": 2}
@@ -61,24 +61,13 @@ def test_row_id_never_reaches_model(tmp_path):
         assert ROW_ID_COLUMN not in keys
         assert keys == ["input_ids"]
     # ...while the recorder captured both ids in order.
-    records = read_composition_records(recorder.path)
-    assert records == []
-    recorder2 = CompositionRecorder(recorder.path)
-    try:
-        recorder2.set_capturing(True)
-        collator2 = RowIdRecordingCollator(base, recorder2)
-        collator2([{"input_ids": [1], ROW_ID_COLUMN: 7}])
-        record = recorder2.finalize_optimizer_step(3)
-    finally:
-        recorder2.close()
-    assert record["row_ids"] == [7]
+    assert record["row_ids"] == [7, 9]
     assert record["step"] == 3
 
 
 def test_batches_without_id_column_pass_through_untouched(tmp_path):
     base = _FakeBaseCollator()
     recorder = _recorder(tmp_path)
-    recorder.set_capturing(True)
     collator = RowIdRecordingCollator(base, recorder)
     try:
         out = collator([{"input_ids": [1, 2]}, {"input_ids": [3]}])
@@ -95,8 +84,7 @@ def test_batches_without_id_column_pass_through_untouched(tmp_path):
 def test_grad_accum_micro_batches_aggregate_to_one_optimizer_step(tmp_path):
     recorder = _recorder(tmp_path)
     try:
-        recorder.set_capturing(True)
-        collator = RowIdRecordingCollator(lambda feats: {"n": len(feats)}, recorder)
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
         collator([{"input_ids": [1], ROW_ID_COLUMN: 0}, {"input_ids": [2], ROW_ID_COLUMN: 1}])
         collator([{"input_ids": [3], ROW_ID_COLUMN: 2}, {"input_ids": [4], ROW_ID_COLUMN: 3}])
         collator([{"input_ids": [5], ROW_ID_COLUMN: 4}])
@@ -110,23 +98,38 @@ def test_grad_accum_micro_batches_aggregate_to_one_optimizer_step(tmp_path):
     assert record["num_rows"] == 5
 
 
-def test_capture_gate_excludes_eval_phase(tmp_path):
+def test_recording_needs_no_capture_gate_batches_collate_before_step_begin(tmp_path):
+    # Regression for the empty-sidecar run: in the HF loop the batch for step
+    # N is collated BEFORE on_step_begin(N) fires, so any begin/end gate is
+    # always one micro-batch late and records nothing. Recording must not
+    # depend on callback timing at all.
     recorder = _recorder(tmp_path)
     try:
-        recorder.set_capturing(True)
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+        # No callbacks fire before the first collator call — ids still land.
+        collator([{"input_ids": [1], ROW_ID_COLUMN: 0}])
+        record = recorder.finalize_optimizer_step(1)
+    finally:
+        recorder.close()
+    assert record["row_ids"] == [0]
+
+
+def test_evaluate_boundary_resets_stale_buffer(tmp_path):
+    # Safety net for evaluate-on-train-data: micros buffered outside an
+    # optimizer step must never leak into the next step's record.
+    recorder = _recorder(tmp_path)
+    try:
         collator = RowIdRecordingCollator(lambda feats: feats, recorder)
         collator([{"input_ids": [1], ROW_ID_COLUMN: 0}])
         first = recorder.finalize_optimizer_step(1)
-        # Eval runs between optimizer steps with capture off: silently ignored
-        # and never leaks into the next step's record.
-        recorder.set_capturing(False)
         collator([{"input_ids": [9], ROW_ID_COLUMN: 99}])
-        recorder.set_capturing(True)
+        dropped = recorder.reset()
         collator([{"input_ids": [2], ROW_ID_COLUMN: 1}])
         second = recorder.finalize_optimizer_step(2)
     finally:
         recorder.close()
     assert first["row_ids"] == [0]
+    assert dropped == 1
     assert second["row_ids"] == [1]
     assert 99 not in first["row_ids"] + second["row_ids"]
 
@@ -135,7 +138,6 @@ def test_resume_appends_instead_of_overwriting(tmp_path):
     path = str(tmp_path / "composition.jsonl")
     first = CompositionRecorder(path)
     try:
-        first.set_capturing(True)
         first.record_micro_batch([0, 1])
         first.finalize_optimizer_step(1)
     finally:
@@ -143,7 +145,6 @@ def test_resume_appends_instead_of_overwriting(tmp_path):
     # A resumed run reopens the same file and continues.
     second = CompositionRecorder(path)
     try:
-        second.set_capturing(True)
         second.record_micro_batch([2])
         second.finalize_optimizer_step(2)
     finally:

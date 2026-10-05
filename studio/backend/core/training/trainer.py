@@ -4126,17 +4126,22 @@ class UnslothTrainer:
         self.trainer.data_collator = RowIdRecordingCollator(base, recorder)
 
         class _CompositionCaptureCallback(TrainerCallback):
-            def on_step_begin(self, args, state, control, **kwargs):
-                recorder.set_capturing(True)
-
+            # NOTE: no on_step_begin gate. Batches are collated BEFORE
+            # on_step_begin fires for their step, so a begin/end gate would
+            # record nothing (every batch arrives while capture is still off).
+            # Recording is unconditional; eval batches carry no id column.
             def on_step_end(self, args, state, control, **kwargs):
-                try:
-                    recorder.finalize_optimizer_step(state.global_step)
-                finally:
-                    recorder.set_capturing(False)
+                recorder.finalize_optimizer_step(state.global_step)
+
+            def on_evaluate(self, args, state, control, **kwargs):
+                dropped = recorder.reset()
+                if dropped:
+                    logger.warning(
+                        f"Batch composition: dropped {dropped} stale "
+                        "micro-batch(es) at evaluate boundary\n"
+                    )
 
             def on_train_end(self, args, state, control, **kwargs):
-                recorder.set_capturing(False)
                 recorder.close()
 
         self.trainer.add_callback(_CompositionCaptureCallback())

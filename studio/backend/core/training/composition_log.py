@@ -35,6 +35,15 @@ ROW_ID_COLUMN = "__row_id__"
 # Granularity contract: with gradient_accumulation_steps=k, one optimizer step
 # consumes exactly k micro-batches and the logged loss is their mean. Records
 # keep both levels so the join never pretends a micro-batch loss exists.
+#
+# Ordering contract (read before re-adding any capture gate): in the HF
+# training loop the next batch is collated BEFORE on_step_begin fires for its
+# step (the for-loop pulls ``next(dataloader)`` first, then runs the step
+# body). A gate toggled in on_step_begin/on_step_end is therefore ALWAYS one
+# micro-batch late: every batch is collated while capture still reflects the
+# previous step, and the sidecar fills with perfect empty records. Recording
+# must be unconditional; train/eval separation comes from the key itself
+# (eval splits are never stamped), plus a defensive reset() on evaluate.
 
 
 def validate_tracking_prerequisites(
@@ -71,13 +80,16 @@ class CompositionRecorder:
 
     The caller (collator wrapper + TrainerCallback) drives the lifecycle:
 
-    * ``set_capturing(True)`` at train-step begin, ``False`` at step end/eval;
-    * :meth:`record_micro_batch` once per collator call while capturing;
-    * :meth:`finalize_optimizer_step` with the Trainer's ``global_step``.
+    * :meth:`record_micro_batch` on every collator call carrying ids;
+    * :meth:`finalize_optimizer_step` with the Trainer's ``global_step`` once
+      per optimizer step (whatever is buffered belongs to that step);
+    * :meth:`reset` on evaluate/predict as a safety net.
 
-    Records are keyed by ``global_step`` — the same number ``lossHistory``
-    uses — so resume never duplicates: already-written steps are simply
-    history in an append-only file.
+    Recording is deliberately UNGATED (see the ordering contract above):
+    batches without the id column (eval splits are never stamped) record
+    nothing on their own. Records are keyed by ``global_step`` — the same
+    number ``lossHistory`` uses — so resume never duplicates: already-written
+    steps are simply history in an append-only file.
     """
 
     def __init__(self, sidecar_path: str, expected_rows: Optional[int] = None) -> None:
@@ -85,7 +97,6 @@ class CompositionRecorder:
         os.makedirs(parent, exist_ok = True)
         self._path = sidecar_path
         self._handle = open(sidecar_path, "a", encoding = "utf-8")
-        self._capturing = False
         self._pending: List[List[int]] = []
         # Row count at stamp time. Used after transforms that may drop columns
         # (Unsloth response masking) to decide whether a positional re-stamp is
@@ -96,21 +107,19 @@ class CompositionRecorder:
     def path(self) -> str:
         return self._path
 
-    @property
-    def capturing(self) -> bool:
-        return self._capturing
-
-    def set_capturing(self, enabled: bool) -> None:
-        if not enabled:
-            self._pending = []
-        self._capturing = bool(enabled)
-
     def record_micro_batch(self, row_ids: Sequence[int]) -> None:
-        if not self._capturing:
-            return
         ids = [int(r) for r in row_ids]
         if ids:
             self._pending.append(ids)
+
+    def reset(self) -> int:
+        """Drop buffered micro-batches (evaluate/predict safety net).
+
+        Returns the number of dropped micro-batches so callers can log it.
+        """
+        dropped = len(self._pending)
+        self._pending = []
+        return dropped
 
     def finalize_optimizer_step(self, global_step: int) -> Dict[str, Any]:
         """Flush buffered micro-batches as one step record. Always writes."""
@@ -185,7 +194,8 @@ class RowIdRecordingCollator:
     tracking been off (minus the id column), so model inputs — and therefore
     gradients — are byte-identical with tracking on or off. Batches without
     the column (e.g. an eval split that was never stamped) pass through
-    untouched and record nothing.
+    untouched and record nothing: key presence, not a capture gate, is what
+    separates train from eval batches (see the ordering contract above).
     """
 
     def __init__(

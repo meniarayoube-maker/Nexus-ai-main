@@ -119,6 +119,9 @@ class CompositionRecorder:
         self._timeline_path = timeline_path
         self._timeline_handle = open(timeline_path, "a", encoding = "utf-8")
         self._pending: List[Tuple[int, List[int], float, bool]] = []
+        # Forensic counters only (never training state): completed optimizer
+        # marks observed, for the expected-vs-actual diagnostic line.
+        self._optimizer_marks = 0
         # Monotonic arrival counter, NEVER reset (not by finalize, not by
         # reset()): it numbers every collator call in arrival order, so a
         # later audit can tell an extra collation apart from a late finalize.
@@ -145,12 +148,25 @@ class CompositionRecorder:
             )
             self._micro_seq += 1
 
+    @property
+    def optimizer_mark_count(self) -> int:
+        return int(self._optimizer_marks)
+
+    @property
+    def total_micros(self) -> int:
+        return int(self._micro_seq)
+
     def mark_event(self, name: str, global_step: Optional[int] = None) -> None:
         """Append one lifecycle event (callback timing) to the timeline file.
 
         Observation only. Kept in a SEPARATE file so step records stay clean
         and existing readers/joins keep working untouched.
         """
+        if name == "optimizer_step":
+            try:
+                self._optimizer_marks += 1
+            except Exception:
+                pass
         try:
             self._timeline_handle.write(
                 json.dumps(
@@ -302,6 +318,82 @@ def _collated_via_preflight() -> bool:
     except Exception:
         pass
     return False
+
+
+def expected_optimizer_step_count(
+    *,
+    num_rows: Any = None,
+    batch_size: Any = None,
+    num_epochs: Any = None,
+    grad_accum: Any = None,
+    max_steps: Any = None,
+) -> Tuple[Optional[int], str]:
+    """Expected optimizer steps from training arithmetic (pure, no I/O).
+
+    ``ceil(rows / batch)`` micros per epoch times epochs, divided by the
+    grad-accum horizon. Returns ``(steps | None, note)``: None with a reason
+    whenever the inputs are missing/invalid, indivisible, or truncated by
+    ``max_steps`` is itself the cap. Single process, ``drop_last=False``
+    (the pilot shape); anything else surfaces as an explicit note, never a
+    silent number.
+    """
+    try:
+        rows = int(num_rows)  # type: ignore[arg-type]
+        per_batch = int(batch_size)  # type: ignore[arg-type]
+        epochs = int(num_epochs)  # type: ignore[arg-type]
+        accum = int(grad_accum)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None, "missing or non-numeric inputs"
+    if rows <= 0 or per_batch <= 0 or epochs <= 0 or accum <= 0:
+        return None, "non-positive inputs"
+    micros = -(-rows // per_batch) * epochs
+    full, remainder = divmod(micros, accum)
+    note = f"{micros} micros ÷ {accum}"
+    if remainder:
+        return None, note + " is not whole (trailing partial group)"
+    try:
+        cap = int(max_steps) if max_steps else 0  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        cap = 0
+    if cap > 0 and full > cap:
+        return cap, note + f" capped by max_steps={cap}"
+    return full, note
+
+
+def diagnostic_summary_line(
+    *,
+    grad_accum: Any = None,
+    num_rows: Any = None,
+    batch_size: Any = None,
+    num_epochs: Any = None,
+    expected_steps: Optional[int] = None,
+    expected_note: str = "",
+    actual_marks: Any = None,
+    actual_micros: Any = None,
+) -> str:
+    """One grep-able diagnostic line: config expectation vs observed reality.
+
+    Pure string building (no I/O): the caller logs it. ``None`` renders as
+    ``?`` so missing data is visible, never blank.
+    """
+    def _show(value: Any) -> str:
+        return "?" if value is None else str(value)
+
+    line = (
+        "Batch composition diagnostic: "
+        f"grad_accum={_show(grad_accum)}, "
+        f"examples={_show(num_rows)}, "
+        f"batch={_show(batch_size)}, "
+        f"epochs={_show(num_epochs)}, "
+        f"expected_optimizer_steps={_show(expected_steps)}"
+    )
+    if expected_note:
+        line += f" ({expected_note})"
+    line += (
+        f", actual_optimizer_step_marks={_show(actual_marks)}, "
+        f"actual_micro_batches={_show(actual_micros)}"
+    )
+    return line
 
 
 def read_run_composition(

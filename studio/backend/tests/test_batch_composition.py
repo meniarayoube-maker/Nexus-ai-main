@@ -1060,6 +1060,126 @@ def test_grouping_carries_no_metrics_and_keeps_schema():
     assert "loss" not in groups[0] and "grad_norm" not in groups[0]
 
 
+def test_deferred_wrap_covers_late_created_optimizer(tmp_path):
+    # The setup-time wrap may find no optimizer yet (lazy creation); the
+    # train-begin retry must then succeed on the same recorder without
+    # disturbing training state. Models the _try_arm_optimizer_marks flow.
+    from core.training.composition_log import wrap_optimizer_step
+
+    class _LateOptimizer:
+        pass
+
+    optimizer = _LateOptimizer()
+    marks = []
+    assert wrap_optimizer_step(optimizer, lambda: marks.append(1)) is False
+    assert marks == []
+    optimizer.step = lambda *args, **kwargs: "stepped"
+
+    calls = []
+
+    def _real_step(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "stepped"
+
+    optimizer.step = _real_step.__get__(optimizer)
+    assert wrap_optimizer_step(optimizer, lambda: marks.append(1)) is True
+    assert optimizer.step("x") == "stepped"
+    assert calls[0][0][-1] == "x" and calls[0][1] == {}
+    assert marks == [1]
+
+
+def test_timeline_mark_with_unknown_step_serializes_null(tmp_path):
+    from core.training.composition_log import CompositionRecorder as _Recorder
+
+    recorder = _Recorder(str(tmp_path / "batch_composition.jsonl"))
+    try:
+        recorder.mark_event("optimizer_step", None)
+    finally:
+        recorder.close()
+    import json as _json
+
+    lines = (
+        tmp_path / "batch_composition_timeline.jsonl"
+    ).read_text(encoding = "utf-8").strip().splitlines()
+    event = _json.loads(lines[-1])
+    assert event["event"] == "optimizer_step"
+    assert event["step"] is None
+    assert isinstance(event["t"], float)
+
+
+def test_expected_optimizer_steps_pilot_configurations():
+    from core.training.composition_log import expected_optimizer_step_count
+
+    # Pilot: 8 rows, batch 2, 4 epochs.
+    assert expected_optimizer_step_count(
+        num_rows = 8, batch_size = 2, num_epochs = 4, grad_accum = 8
+    )[0] == 2
+    assert expected_optimizer_step_count(
+        num_rows = 8, batch_size = 2, num_epochs = 4, grad_accum = 4
+    )[0] == 4
+    assert expected_optimizer_step_count(
+        num_rows = 8, batch_size = 2, num_epochs = 4, grad_accum = 1
+    )[0] == 16
+    steps, note = expected_optimizer_step_count(
+        num_rows = 8, batch_size = 2, num_epochs = 4, grad_accum = 8
+    )
+    assert steps == 2 and "16 micros" in note and "8" in note
+
+
+def test_expected_steps_inexact_invalid_and_capped():
+    from core.training.composition_log import expected_optimizer_step_count
+
+    steps, note = expected_optimizer_step_count(
+        num_rows = 10, batch_size = 3, num_epochs = 1, grad_accum = 8
+    )
+    assert steps is None and "whole" in note
+    for bad in ({"grad_accum": 0}, {"grad_accum": None}, {"batch_size": 0},
+                {"num_epochs": 0}, {"num_rows": 0}):
+        kwargs = {"num_rows": 8, "batch_size": 2, "num_epochs": 4,
+                  "grad_accum": 8, **bad}
+        steps, note = expected_optimizer_step_count(**kwargs)
+        assert steps is None and note, bad
+    steps, note = expected_optimizer_step_count(
+        num_rows = 8, batch_size = 2, num_epochs = 4, grad_accum = 1,
+        max_steps = 4,
+    )
+    assert steps == 4 and "max_steps" in note
+
+
+def test_diagnostic_summary_line_shows_all_six_fields():
+    from core.training.composition_log import diagnostic_summary_line
+
+    line = diagnostic_summary_line(
+        grad_accum = 8, num_rows = 8, batch_size = 2, num_epochs = 4,
+        expected_steps = 2, expected_note = "16 micros ÷ 8",
+        actual_marks = 2, actual_micros = 16,
+    )
+    for fragment in ("grad_accum=8", "examples=8", "batch=2", "epochs=4",
+                     "expected_optimizer_steps=2", "actual_optimizer_step_marks=2",
+                     "actual_micro_batches=16"):
+        assert fragment in line, fragment
+    unknown = diagnostic_summary_line()
+    assert "?" in unknown and "None" not in unknown.replace("?", "")
+
+
+def test_optimizer_mark_counter_counts_only_optimizer_events(tmp_path):
+    recorder = _recorder(tmp_path)
+    try:
+        assert recorder.optimizer_mark_count == 0
+        recorder.mark_event("train_begin", 0)
+        recorder.mark_event("step_end", 1)
+        assert recorder.optimizer_mark_count == 0
+        recorder.mark_event("optimizer_step", None)
+        recorder.mark_event("optimizer_step", 3)
+        assert recorder.optimizer_mark_count == 2
+        assert recorder.total_micros == 0
+        recorder.record_micro_batch([0, 1])
+        recorder.record_micro_batch([2, 3])
+        assert recorder.total_micros == 2
+    finally:
+        recorder.close()
+
+
 def test_gap_input_attributes_identically_to_sentinel_input(tmp_path):
     # The strongest "rule unchanged" proof: the same 16-step pilot flow,
     # once WITH trailing-epoch empties and once WITHOUT, must attribute

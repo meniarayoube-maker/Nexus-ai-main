@@ -4046,6 +4046,8 @@ class UnslothTrainer:
         from core.training.composition_log import (
             ROW_ID_COLUMN,
             CompositionRecorder,
+            diagnostic_summary_line,
+            expected_optimizer_step_count,
             prune_columns_for_tracking,
             stamp_row_ids,
             validate_tracking_prerequisites,
@@ -4091,6 +4093,28 @@ class UnslothTrainer:
             os.path.join(str(output_dir), "batch_composition.jsonl"),
             expected_rows = num_rows,
         )
+        # Diagnostic only: the arithmetic the run SHOULD follow, so the
+        # train-end summary can tell config expectation apart from observed
+        # optimizer steps. Read-only values, never fed back into training.
+        batch_size = training_args.get("batch_size")
+        num_epochs = training_args.get("num_epochs")
+        grad_accum = training_args.get("gradient_accumulation_steps")
+        max_steps = training_args.get("max_steps")
+        expected_steps, expected_note = expected_optimizer_step_count(
+            num_rows = num_rows,
+            batch_size = batch_size,
+            num_epochs = num_epochs,
+            grad_accum = grad_accum,
+            max_steps = max_steps,
+        )
+        recorder.diagnostic_context = {
+            "gradient_accumulation_steps": grad_accum,
+            "num_training_examples": num_rows,
+            "batch_size": batch_size,
+            "num_epochs": num_epochs,
+            "expected_optimizer_steps": expected_steps,
+            "expected_note": expected_note,
+        }
         logger.info(
             f"Batch composition tracking on: {num_rows} rows, sidecar={recorder.path}"
             + (f", pruned columns={pruned}" if pruned else "")
@@ -4114,6 +4138,7 @@ class UnslothTrainer:
 
         from core.training.composition_log import (
             RowIdRecordingCollator,
+            diagnostic_summary_line,
             ensure_row_ids,
             wrap_optimizer_step,
         )
@@ -4131,6 +4156,12 @@ class UnslothTrainer:
         # Forensic only: count REAL optimizer steps on the timeline so the
         # analysis can tell optimizer-step boundaries apart from callback
         # boundaries. Never affects training (see wrap_optimizer_step).
+        # The optimizer may not exist yet at setup time (lazy creation), so a
+        # missed wrap is retried at train begin and BOTH outcomes are logged:
+        # silent skips previously made a missing-marks timeline
+        # indistinguishable from a broken wrap.
+        optimizer_marks = {"armed": False}
+
         def _mark_optimizer_step() -> None:
             try:
                 live_state = getattr(self.trainer, "state", None)
@@ -4139,10 +4170,23 @@ class UnslothTrainer:
                 live_step = None
             recorder.mark_event("optimizer_step", live_step)
 
-        if wrap_optimizer_step(
-            getattr(self.trainer, "optimizer", None), _mark_optimizer_step
-        ):
-            logger.info("Batch composition optimizer-step marks armed\n")
+        def _try_arm_optimizer_marks(where: str) -> None:
+            if optimizer_marks["armed"]:
+                return
+            if wrap_optimizer_step(
+                getattr(self.trainer, "optimizer", None), _mark_optimizer_step
+            ):
+                optimizer_marks["armed"] = True
+                logger.info(
+                    f"Batch composition optimizer-step marks armed ({where})\n"
+                )
+            else:
+                logger.info(
+                    "Batch composition optimizer-step marks unavailable "
+                    f"({where}): optimizer has no .step yet\n"
+                )
+
+        _try_arm_optimizer_marks("trainer setup")
 
         class _CompositionCaptureCallback(TrainerCallback):
             # NOTE: no on_step_begin gate. Batches are collated BEFORE
@@ -4152,6 +4196,9 @@ class UnslothTrainer:
             # The mark_event calls below are forensic observation only (timing
             # correlation in a separate timeline file); they branch nothing.
             def on_train_begin(self, args, state, control, **kwargs):
+                # The optimizer may only exist once training starts; retry the
+                # forensic wrap here so a setup-time miss never stays silent.
+                _try_arm_optimizer_marks("train begin")
                 # _preflight_first_batch pulls real batches through this same
                 # wrapped collator before train() starts; drop them so step 1
                 # records only its own micro-batches.
@@ -4204,6 +4251,25 @@ class UnslothTrainer:
 
             def on_train_end(self, args, state, control, **kwargs):
                 recorder.mark_event("train_end", state.global_step)
+                # Single diagnostic line: config expectation vs observed
+                # reality. Read-only reporting; never touches training.
+                try:
+                    context = getattr(recorder, "diagnostic_context", None) or {}
+                    logger.info(
+                        diagnostic_summary_line(
+                            grad_accum = context.get("gradient_accumulation_steps"),
+                            num_rows = context.get("num_training_examples"),
+                            batch_size = context.get("batch_size"),
+                            num_epochs = context.get("num_epochs"),
+                            expected_steps = context.get("expected_optimizer_steps"),
+                            expected_note = str(context.get("expected_note") or ""),
+                            actual_marks = recorder.optimizer_mark_count,
+                            actual_micros = recorder.total_micros,
+                        )
+                        + "\n"
+                    )
+                except Exception:
+                    pass
                 recorder.close()
 
         self.trainer.add_callback(_CompositionCaptureCallback())

@@ -1288,3 +1288,34 @@ def test_present_optimizer_steps_rejects_misaligned_inputs():
         present_optimizer_steps(groups, [1, 2, 3])
     with pytest.raises(ValueError, match = "strictly increase"):
         present_optimizer_steps(groups[:2], [2, 2])
+
+
+def test_file_b_end_to_end_true_steps_with_losses():
+    # The full success shape on REAL pilot data: 64 collated micros
+    # (offset seqs like a real sidecar, post-reset) + 8 optimizer marks
+    # observed live => 8 true steps x 8 micros x 16 rows, each with its
+    # step-keyed loss. No empty groups, no lost/duplicated rows.
+    from core.training.composition_log import (
+        present_optimizer_steps,
+        resolve_optimizer_steps,
+    )
+
+    entries = [(seq + 2, rows) for seq, rows in _file_b_records()]
+    groups, report = resolve_optimizer_steps(entries, 8)
+    assert report["num_groups"] == 8
+    assert report["complete"] is True
+    assert all(g["num_micros"] == 8 and g["num_rows"] == 16 for g in groups)
+    losses = {step: round(2.64 - 0.11 * step, 4) for step in range(1, 9)}
+    view = present_optimizer_steps(groups, list(range(1, 9)), losses)
+    assert [row["optimizer_step"] for row in view] == list(range(1, 9))
+    assert [row["global_step"] for row in view] == list(range(1, 9))
+    assert [row["loss"] for row in view] == [losses[s] for s in range(1, 9)]
+    # First true step = first 8 collated micros (prefetch extras fall into
+    # place by order, not by record boundaries).
+    assert view[0]["row_ids"] == groups[0]["row_ids"][:16]
+    assert len(view[0]["row_ids"]) == 16
+    flat = [r for row in view for r in row["row_ids"]]
+    assert len(flat) == 128
+    assert sorted(flat) == sorted(
+        r for _, rows in entries for r in rows
+    )

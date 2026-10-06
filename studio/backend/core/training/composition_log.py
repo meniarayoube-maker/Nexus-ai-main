@@ -416,6 +416,47 @@ def attribute_steps(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return attributed
 
 
+def present_step_attribution(
+    records: Iterable[Dict[str, Any]],
+    losses: Iterable[Tuple[int, float]] = (),
+) -> List[Dict[str, Any]]:
+    """Presentation layer: one truthful row per recorded step.
+
+    Combines the approved forensic rule (:func:`attribute_steps`) with step
+    losses keyed by TRUE step (same keying as ``lossHistory`` — never array
+    position) into::
+
+        {trainer_step, loss, attributed_row_ids, attributed_seqs, rule}
+
+    * ``trainer_step`` is never renumbered: it stays aligned with the chart
+      axis, ``lossHistory`` keys, ``checkpoint-N`` names and resume.
+    * The raw records (and the sidecar file) are never modified; steps whose
+      record holds no batch attribute no rows (``rule`` says why).
+    * Read-only transform for display/diagnosis. No training behavior reads
+      or depends on it.
+    """
+    attributed = attribute_steps(records)
+    loss_by_step: Dict[int, float] = {}
+    for step, value in losses:
+        try:
+            loss_by_step[int(step)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    view: List[Dict[str, Any]] = []
+    for entry in attributed:
+        step = int(entry.get("step", -1))
+        view.append(
+            {
+                "trainer_step": step,
+                "loss": loss_by_step.get(step),
+                "attributed_row_ids": list(entry.get("attributed_row_ids", [])),
+                "attributed_seqs": list(entry.get("attributed_seqs", [])),
+                "rule": str(entry.get("rule", "none")),
+            }
+        )
+    return view
+
+
 def join_with_losses(
     records: Iterable[Dict[str, Any]],
     losses: Iterable[Tuple[int, float]],

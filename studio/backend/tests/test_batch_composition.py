@@ -22,6 +22,7 @@ from core.training.composition_log import (
     attribute_steps,
     ensure_row_ids,
     join_with_losses,
+    present_step_attribution,
     prune_columns_for_tracking,
     read_composition_records,
     read_run_composition,
@@ -842,6 +843,75 @@ def test_resume_with_metrics_appends_keyed_records(tmp_path):
     assert sorted(saved) == [1, 2]
     assert (saved[1]["loss"], saved[2]["loss"]) == (1.0, 0.9)
     assert (saved[1]["grad_norm"], saved[2]["grad_norm"]) == (5.0, 4.0)
+
+
+def _pilot_gap_records():
+    # Step 5/6 region of the real pilot sidecar (grad_accum=1, batch=2).
+    return [
+        {"step": 4, "micro_batches": [], "micro_seqs": [],
+         "row_ids": []},
+        {"step": 5, "micro_batches": [[0, 4], [6, 1]], "micro_seqs": [6, 7],
+         "row_ids": [0, 4, 6, 1]},
+        {"step": 6, "micro_batches": [[3, 2]], "micro_seqs": [8],
+         "row_ids": [3, 2]},
+    ]
+
+
+def test_presentation_resolves_step_five_and_six_truthfully():
+    view = {
+        row["trainer_step"]: row
+        for row in present_step_attribution(
+            _pilot_gap_records(), [(5, 2.9812), (6, 1.7207)]
+        )
+    }
+    # The approved rule, surfaced per step: step 5 owns the epoch-opening
+    # micro only; step 6 owns the previous record's tail. No renumbering.
+    assert view[5]["attributed_row_ids"] == [0, 4]
+    assert view[5]["rule"] == "epoch_first"
+    assert view[5]["loss"] == 2.9812
+    assert view[6]["attributed_row_ids"] == [6, 1]
+    assert view[6]["rule"] == "prev_tail"
+    assert view[6]["loss"] == 1.7207
+
+
+def test_presentation_keys_loss_by_true_step_never_position():
+    records = _pilot_gap_records()
+    view = {
+        row["trainer_step"]: row
+        for row in present_step_attribution(
+            records, [(6, 1.5), (5, 2.5)]
+        )
+    }
+    # Out-of-order / gapped loss input still lands on true steps...
+    assert view[5]["loss"] == 2.5
+    assert view[6]["loss"] == 1.5
+    # ...steps without a loss point stay honestly empty...
+    view2 = {
+        row["trainer_step"]: row
+        for row in present_step_attribution(records, [(5, 2.5)])
+    }
+    assert view2[6]["loss"] is None
+    # ...and trainer_step values pass through verbatim (no relabeling).
+    assert [row["trainer_step"] for row in present_step_attribution(records)] == [4, 5, 6]
+
+
+def test_presentation_never_mutates_raw_records():
+    import copy as _copy
+
+    records = _pilot_gap_records()
+    snapshot = _copy.deepcopy(records)
+    present_step_attribution(records, [(4, 0.1), (5, 0.2), (6, 0.3)])
+    assert records == snapshot
+
+
+def test_presentation_empty_record_carries_no_rows_but_keeps_loss():
+    view = {
+        row["trainer_step"]: row
+        for row in present_step_attribution(_pilot_gap_records(), [(4, 9.9)])
+    }
+    assert view[4]["attributed_row_ids"] == []
+    assert view[4]["rule"] == "none"
+    assert view[4]["loss"] == 9.9
 
 
 def test_gap_input_attributes_identically_to_sentinel_input(tmp_path):

@@ -4112,7 +4112,11 @@ class UnslothTrainer:
         """
         from transformers import TrainerCallback, default_data_collator
 
-        from core.training.composition_log import RowIdRecordingCollator, ensure_row_ids
+        from core.training.composition_log import (
+            RowIdRecordingCollator,
+            ensure_row_ids,
+            wrap_optimizer_step,
+        )
 
         self.trainer.train_dataset, restamp_action = ensure_row_ids(
             self.trainer.train_dataset, getattr(recorder, "expected_rows", None)
@@ -4124,6 +4128,21 @@ class UnslothTrainer:
             )
         base = self.trainer.data_collator or default_data_collator
         self.trainer.data_collator = RowIdRecordingCollator(base, recorder)
+        # Forensic only: count REAL optimizer steps on the timeline so the
+        # analysis can tell optimizer-step boundaries apart from callback
+        # boundaries. Never affects training (see wrap_optimizer_step).
+        def _mark_optimizer_step() -> None:
+            try:
+                live_state = getattr(self.trainer, "state", None)
+                live_step = getattr(live_state, "global_step", None)
+            except Exception:
+                live_step = None
+            recorder.mark_event("optimizer_step", live_step)
+
+        if wrap_optimizer_step(
+            getattr(self.trainer, "optimizer", None), _mark_optimizer_step
+        ):
+            logger.info("Batch composition optimizer-step marks armed\n")
 
         class _CompositionCaptureCallback(TrainerCallback):
             # NOTE: no on_step_begin gate. Batches are collated BEFORE

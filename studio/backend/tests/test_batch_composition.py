@@ -914,6 +914,152 @@ def test_presentation_empty_record_carries_no_rows_but_keeps_loss():
     assert view[4]["loss"] == 9.9
 
 
+class _FakeOptimizer:
+    """Stands in for a torch optimizer: records step calls verbatim."""
+
+    def __init__(self):
+        self.calls = []
+        self.result = object()
+
+    def step(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return self.result
+
+
+def test_wrap_optimizer_step_counts_without_changing_behavior():
+    from core.training.composition_log import wrap_optimizer_step
+
+    optimizer = _FakeOptimizer()
+    marks = []
+    assert wrap_optimizer_step(optimizer, lambda: marks.append(1)) is True
+    assert optimizer.step(closure_arg := object()) is optimizer.result
+    assert optimizer.calls == [((closure_arg,), {})]
+    assert marks == [1]
+    optimizer.step()
+    assert marks == [1, 1]
+
+
+def test_wrap_optimizer_step_never_breaks_training():
+    from core.training.composition_log import wrap_optimizer_step
+
+    assert wrap_optimizer_step(object(), lambda: None) is False
+    assert wrap_optimizer_step(None, lambda: None) is False
+
+    class _ReadOnlyStep:
+        @property
+        def step(self):
+            raise RuntimeError("nope")
+
+    assert wrap_optimizer_step(_ReadOnlyStep(), lambda: None) is False
+
+    optimizer = _FakeOptimizer()
+
+    def _boom():
+        raise RuntimeError("timeline disk full (simulated)")
+
+    assert wrap_optimizer_step(optimizer, _boom) is True
+    assert optimizer.step() is optimizer.result
+
+
+def _real_pilot_micros():
+    # Verbatim collation order of the grad_accum diagnostic run (seqs 2..17):
+    # four full reshuffled epochs, batch size 2.
+    rows = [
+        [3, 0], [1, 7], [2, 5], [6, 4],
+        [0, 4], [6, 1], [3, 2], [7, 5],
+        [0, 1], [6, 7], [4, 5], [3, 2],
+        [6, 4], [0, 2], [7, 3], [1, 5],
+    ]
+    return [(seq, list(pair)) for seq, pair in zip(range(2, 18), rows)]
+
+
+def test_grouping_k1_identity_no_empty_groups():
+    from core.training.composition_log import resolve_optimizer_steps
+
+    entries = [(0, [0]), (1, [1]), (2, [2])]
+    groups, report = resolve_optimizer_steps(entries, 1)
+    assert [g["optimizer_step"] for g in groups] == [1, 2, 3]
+    assert all(g["num_micros"] >= 1 and g["num_rows"] >= 1 for g in groups)
+    assert report["complete"] is True
+
+
+def test_grouping_k4_matches_pilot_epochs_exactly():
+    # grad_accum=4 shape over the REAL captured micros: 4 groups, each a
+    # full reshuffled epoch (proves timing-independent grouping: only order
+    # is read, never micro_t/prefetch gaps).
+    from core.training.composition_log import resolve_optimizer_steps
+
+    groups, report = resolve_optimizer_steps(_real_pilot_micros(), 4)
+    assert report == {
+        "micros_per_step": 4, "num_groups": 4, "total_micros": 16,
+        "total_rows": 32, "contiguous": True, "complete": True,
+    }
+    for group in groups:
+        assert group["num_micros"] == 4
+        assert sorted(group["row_ids"]) == list(range(8))
+    assert groups[0]["micro_seqs"] == [2, 3, 4, 5]
+    assert groups[0]["row_ids"] == [3, 0, 1, 7, 2, 5, 6, 4]
+
+
+def test_grouping_k8_target_shape_batch2():
+    # The task success criterion: 32 micros / batch 2 chunked 8 per true
+    # optimizer step -> 4 groups of 8 micros / 16 rows, no empties, no loss,
+    # no duplication.
+    from core.training.composition_log import resolve_optimizer_steps
+
+    entries = [(seq, [2 * seq, 2 * seq + 1]) for seq in range(32)]
+    groups, report = resolve_optimizer_steps(entries, 8)
+    assert report["num_groups"] == 4
+    assert report["complete"] is True
+    assert groups[0]["row_ids"] == list(range(16))
+    assert groups[1]["row_ids"] == list(range(16, 32))
+    assert groups[2]["row_ids"] == list(range(32, 48))
+    assert groups[3]["row_ids"] == list(range(48, 64))
+    assert all(g["num_micros"] == 8 and g["num_rows"] == 16 for g in groups)
+
+
+def test_grouping_batch4_shapes():
+    from core.training.composition_log import resolve_optimizer_steps
+
+    entries = [(seq, [4 * seq + i for i in range(4)]) for seq in range(8)]
+    groups, _ = resolve_optimizer_steps(entries, 2)
+    assert [g["num_micros"] for g in groups] == [2, 2, 2, 2]
+    assert [g["num_rows"] for g in groups] == [8, 8, 8, 8]
+    groups8, report8 = resolve_optimizer_steps(entries, 8)
+    assert len(groups8) == 1
+    assert groups8[0]["num_micros"] == 8
+    assert groups8[0]["num_rows"] == 32
+    assert report8["complete"] is True
+
+
+def test_grouping_rejects_gaps_duplicates_and_ragged():
+    from core.training.composition_log import resolve_optimizer_steps
+
+    entries = [(0, [0]), (1, [1]), (2, [2])]
+    with pytest.raises(ValueError, match = "contiguous"):
+        resolve_optimizer_steps([(0, [0]), (2, [2])], 1)
+    with pytest.raises(ValueError, match = "contiguous"):
+        resolve_optimizer_steps([(0, [0]), (0, [1])], 1)
+    with pytest.raises(ValueError, match = "positive int"):
+        resolve_optimizer_steps(entries, 0)
+    with pytest.raises(ValueError, match = "positive int"):
+        resolve_optimizer_steps(entries, -3)
+    with pytest.raises(ValueError, match = "whole steps"):
+        resolve_optimizer_steps(entries, 2)
+
+
+def test_grouping_carries_no_metrics_and_keeps_schema():
+    # Grouping is composition-only: it neither invents metrics (loss lives
+    # with on_log keyed steps, joined separately) nor drops composition keys.
+    from core.training.composition_log import resolve_optimizer_steps
+
+    groups, _ = resolve_optimizer_steps([(0, [0, 1]), (1, [2, 3])], 1)
+    assert set(groups[0]) == {
+        "optimizer_step", "micro_seqs", "row_ids", "num_micros", "num_rows",
+    }
+    assert "loss" not in groups[0] and "grad_norm" not in groups[0]
+
+
 def test_gap_input_attributes_identically_to_sentinel_input(tmp_path):
     # The strongest "rule unchanged" proof: the same 16-step pilot flow,
     # once WITH trailing-epoch empties and once WITHOUT, must attribute

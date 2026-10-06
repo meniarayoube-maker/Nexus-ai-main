@@ -622,3 +622,106 @@ def prune_columns_for_tracking(
     if drop and hasattr(dataset, "remove_columns"):
         dataset = dataset.remove_columns(drop)
     return dataset, drop
+
+
+def wrap_optimizer_step(optimizer: Any, on_optimizer_step: Callable[[], None]) -> bool:
+    """Count REAL optimizer steps without changing training behavior.
+
+    Replaces ``optimizer.step`` with a pass-through wrapper that forwards
+    every positional/keyword argument, returns the original result, and only
+    then invokes ``on_optimizer_step()`` (used to mark the timeline). Any
+    failure — missing ``.step``, read-only attribute, or an exception inside
+    the callback — leaves the optimizer exactly as found and returns False.
+    Training can never break from diagnostics: the mark path is doubly
+    guarded (here and inside ``mark_event``).
+    """
+    try:
+        step_method = getattr(optimizer, "step", None)
+    except Exception:
+        return False
+    if not callable(step_method):
+        return False
+
+    def _counting_step(*args: Any, **kwargs: Any) -> Any:
+        result = step_method(*args, **kwargs)
+        try:
+            on_optimizer_step()
+        except Exception:
+            pass
+        return result
+
+    try:
+        optimizer.step = _counting_step  # type: ignore[method-assign]
+    except Exception:
+        return False
+    return True
+
+
+def resolve_optimizer_steps(
+    micro_entries: Sequence[Tuple[int, List[int]]],
+    micros_per_step: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Group collation-ordered micros into true optimizer steps (read-time).
+
+    ``micro_entries`` is ``[(seq, row_ids)]`` in arrival order (e.g. expanded
+    from sidecar records); ``micros_per_step`` K is the micros each optimizer
+    step consumed. Grouping is purely positional — timestamps and prefetch
+    timing never enter it — so prefetch can neither help nor corrupt it.
+
+    Validation is strict and loud (fail-loud, never silent misattribution):
+    K must be a positive int; seqs must be contiguous with no gaps or
+    duplicates; every group holds exactly K micros (no empties by
+    construction); the flat rows across groups must equal the input multiset
+    (no loss, no duplication). Returns ``(groups, report)`` where each group
+    is ``{optimizer_step (1-based ordinal), micro_seqs, row_ids, num_micros,
+    num_rows}``.
+    """
+    try:
+        width = int(micros_per_step)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"micros_per_step must be a positive int (got {micros_per_step!r})"
+        ) from None
+    if width <= 0:
+        raise ValueError(
+            f"micros_per_step must be a positive int (got {micros_per_step!r})"
+        )
+    entries = [(int(seq), [int(r) for r in rows]) for seq, rows in micro_entries]
+    seqs_only = [seq for seq, _ in entries]
+    for first, second in zip(seqs_only, seqs_only[1:]):
+        if second != first + 1:
+            raise ValueError(
+                f"micro seqs not contiguous ({first} -> {second}); cannot "
+                "attribute without inventing order"
+            )
+    if entries and len(entries) % width != 0:
+        raise ValueError(
+            f"{len(entries)} micros do not split into whole steps of "
+            f"{width}; refusing partial attribution"
+        )
+    groups: List[Dict[str, Any]] = []
+    for ordinal in range(len(entries) // width if entries else 0):
+        chunk = entries[ordinal * width : (ordinal + 1) * width]
+        chunk_rows: List[int] = [r for _, rows in chunk for r in rows]
+        groups.append(
+            {
+                "optimizer_step": ordinal + 1,
+                "micro_seqs": [seq for seq, _ in chunk],
+                "row_ids": chunk_rows,
+                "num_micros": len(chunk),
+                "num_rows": len(chunk_rows),
+            }
+        )
+    flat_in = sorted(r for _, rows in entries for r in rows)
+    flat_out = sorted(r for group in groups for r in group["row_ids"])
+    report = {
+        "micros_per_step": width,
+        "num_groups": len(groups),
+        "total_micros": len(entries),
+        "total_rows": len(flat_in),
+        "contiguous": True,
+        "complete": flat_in == flat_out,
+    }
+    if flat_in != flat_out:
+        raise ValueError("grouping lost or duplicated rows; refusing result")
+    return groups, report

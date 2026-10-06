@@ -117,14 +117,23 @@ export function LiveCheckpointsPanel({
         setComposition({ status: "empty" });
         return;
       }
+      // Full fidelity with the raw sidecar: every key the API serves is
+      // written verbatim (metrics included), so a download always matches
+      // the on-disk file instead of a stripped subset.
       const lines = res.records.map((record) =>
         JSON.stringify({
           step: record.step,
           micro_batches: record.micro_batches,
           micro_seqs: record.micro_seqs ?? [],
+          micro_t: record.micro_t ?? [],
+          micro_via_preflight: record.micro_via_preflight ?? [],
           row_ids: record.row_ids,
           num_micro_batches: record.num_micro_batches,
           num_rows: record.num_rows,
+          loss: record.loss ?? null,
+          smoothed_loss: record.smoothed_loss ?? null,
+          grad_norm: record.grad_norm ?? null,
+          learning_rate: record.learning_rate ?? null,
         }),
       );
       await downloadFile(

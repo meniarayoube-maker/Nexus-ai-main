@@ -66,6 +66,12 @@ export interface BatchCompositionRecord {
   row_ids: number[];
   num_micro_batches: number;
   num_rows: number;
+  loss?: number | null;
+  smoothed_loss?: number | null;
+  grad_norm?: number | null;
+  learning_rate?: number | null;
+  micro_t?: number[];
+  micro_via_preflight?: boolean[];
 }
 
 export interface BatchCompositionResponse {

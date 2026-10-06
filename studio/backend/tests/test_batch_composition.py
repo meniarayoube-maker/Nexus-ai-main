@@ -710,6 +710,35 @@ def test_old_sidecar_without_metrics_stays_readable(tmp_path):
     assert attributed[2]["rule"] == "prev_tail"
 
 
+def test_finalized_record_carries_full_api_contract(tmp_path):
+    # Regression for the stripped-download incident: the on-disk record must
+    # contain every key the API/UI contract serves (composition + metrics +
+    # diagnostics), so a download can never silently drop fields again.
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(
+            recorder, collator, [(3, 0)], 6,
+            {"loss": 1.5, "grad_norm": 2.5, "learning_rate": 0.001},
+        )
+        _drive_step(recorder, collator, [(1, 7)], 7, {})
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    expected_keys = {
+        "step", "micro_batches", "micro_seqs", "micro_t",
+        "micro_via_preflight", "row_ids", "num_micro_batches", "num_rows",
+        "loss", "smoothed_loss", "grad_norm", "learning_rate",
+    }
+    assert expected_keys <= set(saved[6]), sorted(set(saved[6]))
+    assert saved[6]["loss"] == 1.5
+    assert saved[6]["grad_norm"] == 2.5
+    assert saved[6]["learning_rate"] == 0.001
+    assert saved[6]["smoothed_loss"] is None
+    assert saved[6]["micro_t"] != []
+    assert saved[6]["micro_via_preflight"] == [False]
+
+
 def test_enriched_record_matches_logging_event_exactly(tmp_path):
     # Test 10 — all four metrics at once, == not approx, file round-trip.
     recorder = _recorder(tmp_path)

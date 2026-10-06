@@ -865,7 +865,12 @@ class TrainingRunDetailResponse(BaseModel):
 
 
 class BatchCompositionRecord(BaseModel):
-    """One optimizer step's batch composition (step -> example row ids)."""
+    """One optimizer step's batch composition (step -> example row ids).
+
+    Metric/diagnostic keys mirror the sidecar file verbatim (same values the
+    Charts render, straight from the training logging event). All optional so
+    older sidecars without them stay valid.
+    """
 
     step: int
     micro_batches: List[List[int]] = Field(default_factory = list)
@@ -875,6 +880,12 @@ class BatchCompositionRecord(BaseModel):
     row_ids: List[int] = Field(default_factory = list)
     num_micro_batches: int = 0
     num_rows: int = 0
+    loss: Optional[float] = None
+    smoothed_loss: Optional[float] = None
+    grad_norm: Optional[float] = None
+    learning_rate: Optional[float] = None
+    micro_t: List[float] = Field(default_factory = list)
+    micro_via_preflight: List[bool] = Field(default_factory = list)
 
 
 class BatchCompositionResponse(BaseModel):

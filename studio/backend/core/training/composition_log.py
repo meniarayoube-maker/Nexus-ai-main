@@ -251,6 +251,69 @@ def read_composition_records(sidecar_path: str) -> List[Dict[str, Any]]:
     return records
 
 
+def attribute_steps(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Attribute each optimizer step to the micro-batch(es) that fed its loss.
+
+    Proven rule (forensic runs, grad_accum=1): the training loop collates one
+    extra micro-batch just before the first step of each epoch, so step
+    records group as ``[2, 1, 1, 0, ...]`` micros instead of ``[1, 1, 1, 1]``.
+    Therefore, loss(step N) was computed from:
+
+    * the FIRST micro of its own record when the step opens an epoch
+      (detected data-driven: first record overall, or previous record empty —
+      an empty record only ever closes an epoch, since every training step
+      consumes at least one micro-batch); otherwise
+    * the LAST micro of the PREVIOUS step's record.
+
+    Returns one entry per input record: ``step``, ``attributed_row_ids``,
+    ``attributed_seqs`` and the ``rule`` branch taken (``epoch_first`` /
+    ``prev_tail`` / ``none``) so every attribution stays auditable. Pure
+    read-time transform: no training behavior depends on it.
+    """
+    ordered = sorted(
+        (dict(r) for r in records), key = lambda r: int(r.get("step", -1))
+    )
+    attributed: List[Dict[str, Any]] = []
+    for index, record in enumerate(ordered):
+        step = int(record.get("step", -1))
+        own_micros = [list(m) for m in record.get("micro_batches", []) or []]
+        own_seqs = list(record.get("micro_seqs", []) or [])
+        previous = ordered[index - 1] if index > 0 else None
+        prev_empty = previous is None or not (previous.get("row_ids") or [])
+        if prev_empty:
+            if own_micros:
+                seq = (
+                    own_seqs[0]
+                    if len(own_seqs) == len(own_micros)
+                    else None
+                )
+                chosen = [(seq, own_micros[0])]
+            else:
+                chosen = []
+            rule = "epoch_first" if own_micros else "none"
+        else:
+            prev_micros = [list(m) for m in previous.get("micro_batches", []) or []]
+            prev_seqs = list(previous.get("micro_seqs", []) or [])
+            if prev_micros and prev_seqs and len(prev_micros) == len(prev_seqs):
+                chosen = [(prev_seqs[-1], prev_micros[-1])]
+            elif prev_micros:
+                chosen = [(None, prev_micros[-1])]
+            else:
+                chosen = []
+            rule = "prev_tail" if chosen else "none"
+        chosen_seqs = [seq for seq, _ in chosen]
+        chosen_rows: List[int] = [r for _, micro in chosen for r in micro]
+        attributed.append(
+            {
+                "step": step,
+                "attributed_row_ids": chosen_rows,
+                "attributed_seqs": chosen_seqs,
+                "rule": rule,
+            }
+        )
+    return attributed
+
+
 def join_with_losses(
     records: Iterable[Dict[str, Any]],
     losses: Iterable[Tuple[int, float]],

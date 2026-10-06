@@ -17,6 +17,7 @@ from core.training.composition_log import (
     ROW_ID_COLUMN,
     CompositionRecorder,
     RowIdRecordingCollator,
+    attribute_steps,
     ensure_row_ids,
     join_with_losses,
     prune_columns_for_tracking,
@@ -345,6 +346,86 @@ def test_masking_dropped_rows_is_refused_not_guessed():
         ensure_row_ids(dataset, expected_rows = 8)
     with pytest.raises(ValueError, match = "rows were filtered"):
         ensure_row_ids(dataset, expected_rows = None)
+
+
+def _forensic_run_records():
+    # Verbatim shape of the pilot sidecar (grad_accum=1, 8 rows, 4 epochs):
+    # first record of each epoch holds 2 micros, last holds none.
+    raw = [
+        (1, [[3, 0], [1, 7]], [2, 3]),
+        (2, [[2, 5]], [4]),
+        (3, [[6, 4]], [5]),
+        (4, [], []),
+        (5, [[0, 4], [6, 1]], [6, 7]),
+        (6, [[3, 2]], [8]),
+        (7, [[7, 5]], [9]),
+        (8, [], []),
+        (9, [[0, 1], [6, 7]], [10, 11]),
+        (10, [[4, 5]], [12]),
+        (11, [[3, 2]], [13]),
+        (12, [], []),
+        (13, [[6, 4], [0, 2]], [14, 15]),
+        (14, [[7, 3]], [16]),
+        (15, [[1, 5]], [17]),
+        (16, [], []),
+    ]
+    records = []
+    for step, micros, seqs in raw:
+        flat = [r for micro in micros for r in micro]
+        records.append(
+            {
+                "step": step,
+                "micro_batches": micros,
+                "micro_seqs": seqs,
+                "row_ids": flat,
+                "num_micro_batches": len(micros),
+                "num_rows": len(flat),
+            }
+        )
+    return records
+
+
+def test_attribute_steps_matches_forensic_run_exactly():
+    attributed = {
+        entry["step"]: entry for entry in attribute_steps(_forensic_run_records())
+    }
+    expected_rows = {
+        1: [3, 0], 2: [1, 7], 3: [2, 5], 4: [6, 4],
+        5: [0, 4], 6: [6, 1], 7: [3, 2], 8: [7, 5],
+        9: [0, 1], 10: [6, 7], 11: [4, 5], 12: [3, 2],
+        13: [6, 4], 14: [0, 2], 15: [7, 3], 16: [1, 5],
+    }
+    for step in range(1, 17):
+        assert attributed[step]["attributed_row_ids"] == expected_rows[step], step
+    # Every epoch attributes each of the 8 rows exactly once: no loss, no dup.
+    for first in (1, 5, 9, 13):
+        epoch_rows = []
+        for step in range(first, first + 4):
+            epoch_rows.extend(attributed[step]["attributed_row_ids"])
+        assert sorted(epoch_rows) == list(range(8)), first
+    # Branch audit: epoch openers use their own first micro, the rest the
+    # previous record's tail.
+    for step in (1, 5, 9, 13):
+        assert attributed[step]["rule"] == "epoch_first", step
+    for step in (2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15, 16):
+        assert attributed[step]["rule"] == "prev_tail", step
+    # Seqs stay attached for the audit trail.
+    assert attributed[1]["attributed_seqs"] == [2]
+    assert attributed[2]["attributed_seqs"] == [3]
+
+
+def test_attribute_steps_tolerates_legacy_records_without_seqs():
+    records = [
+        {"step": 1, "micro_batches": [[0, 1]], "row_ids": [0, 1]},
+        {"step": 2, "micro_batches": [], "row_ids": []},
+    ]
+    attributed = {entry["step"]: entry for entry in attribute_steps(records)}
+    assert attributed[1]["attributed_row_ids"] == [0, 1]
+    # Unknown seqs stay explicit Nones rather than invented numbers.
+    assert attributed[1]["attributed_seqs"] == [None]
+    assert attributed[1]["rule"] == "epoch_first"
+    assert attributed[2]["attributed_row_ids"] == [0, 1]
+    assert attributed[2]["rule"] == "prev_tail"
 
 
 def test_read_run_composition_serving_helper(tmp_path):

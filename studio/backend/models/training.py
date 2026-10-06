@@ -869,6 +869,9 @@ class BatchCompositionRecord(BaseModel):
 
     step: int
     micro_batches: List[List[int]] = Field(default_factory = list)
+    # Arrival order per micro-batch (monotonic collator counter); lets an
+    # audit distinguish an extra collation from a late step flush.
+    micro_seqs: List[int] = Field(default_factory = list)
     row_ids: List[int] = Field(default_factory = list)
     num_micro_batches: int = 0
     num_rows: int = 0

@@ -97,7 +97,14 @@ class CompositionRecorder:
         os.makedirs(parent, exist_ok = True)
         self._path = sidecar_path
         self._handle = open(sidecar_path, "a", encoding = "utf-8")
-        self._pending: List[List[int]] = []
+        self._pending: List[Tuple[int, List[int]]] = []
+        # Monotonic arrival counter, NEVER reset (not by finalize, not by
+        # reset()): it numbers every collator call in arrival order, so a
+        # later audit can tell an extra collation apart from a late finalize.
+        # If exactly the expected micro-batches were collated, seqs are
+        # contiguous 0..N-1 across the whole file; any gap or duplicate
+        # proves out-of-band pulls.
+        self._micro_seq = 0
         # Row count at stamp time. Used after transforms that may drop columns
         # (Unsloth response masking) to decide whether a positional re-stamp is
         # still exact (same length) or must be refused (rows were filtered).
@@ -110,7 +117,8 @@ class CompositionRecorder:
     def record_micro_batch(self, row_ids: Sequence[int]) -> None:
         ids = [int(r) for r in row_ids]
         if ids:
-            self._pending.append(ids)
+            self._pending.append((self._micro_seq, ids))
+            self._micro_seq += 1
 
     def reset(self) -> int:
         """Drop buffered micro-batches (evaluate/predict safety net).
@@ -123,11 +131,13 @@ class CompositionRecorder:
 
     def finalize_optimizer_step(self, global_step: int) -> Dict[str, Any]:
         """Flush buffered micro-batches as one step record. Always writes."""
-        flat: List[int] = [r for micro in self._pending for r in micro]
+        flat: List[int] = [r for _, micro in self._pending for r in micro]
         record = {
             "step": int(global_step),
-            "micro_batches": [list(m) for m in self._pending],
-            "row_ids": flat,
+            "micro_batches": [list(micro) for _, micro in self._pending],
+            # Arrival order of each micro-batch; see _micro_seq contract above.
+            "micro_seqs": [seq for seq, _ in self._pending],
+            "row_ids": list(flat),
             "num_micro_batches": len(self._pending),
             "num_rows": len(flat),
         }

@@ -62,6 +62,7 @@ export interface TrainingRunDeleteResponse {
 export interface BatchCompositionRecord {
   step: number;
   micro_batches: number[][];
+  micro_seqs: number[];
   row_ids: number[];
   num_micro_batches: number;
   num_rows: number;

@@ -121,6 +121,7 @@ export function LiveCheckpointsPanel({
         JSON.stringify({
           step: record.step,
           micro_batches: record.micro_batches,
+          micro_seqs: record.micro_seqs ?? [],
           row_ids: record.row_ids,
           num_micro_batches: record.num_micro_batches,
           num_rows: record.num_rows,

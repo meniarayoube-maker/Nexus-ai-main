@@ -136,6 +136,39 @@ def test_pretrain_pulls_are_cleared_before_step_one(tmp_path):
     assert record["row_ids"] == [3]
 
 
+def test_micro_seqs_number_every_collation_monotonically(tmp_path):
+    # Diagnostic contract: seqs expose the true collation count/order, so an
+    # audit can separate "extra collation" (gap/duplicates in seqs) from a
+    # "late step flush" (contiguous seqs, shifted grouping).
+    recorder = _recorder(tmp_path)
+    try:
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+        collator([{"input_ids": [1], ROW_ID_COLUMN: 0}])
+        collator([{"input_ids": [2], ROW_ID_COLUMN: 1}])
+        first = recorder.finalize_optimizer_step(1)
+        collator([{"input_ids": [3], ROW_ID_COLUMN: 2}])
+        second = recorder.finalize_optimizer_step(2)
+    finally:
+        recorder.close()
+    assert first["micro_seqs"] == [0, 1]
+    assert second["micro_seqs"] == [2]
+
+
+def test_reset_keeps_arrival_counter_monotonic(tmp_path):
+    recorder = _recorder(tmp_path)
+    try:
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+        collator([{"input_ids": [1], ROW_ID_COLUMN: 0}])
+        assert recorder.reset() == 1
+        collator([{"input_ids": [2], ROW_ID_COLUMN: 1}])
+        record = recorder.finalize_optimizer_step(1)
+    finally:
+        recorder.close()
+    # The dropped pre-train micro keeps its seq; nothing is renumbered.
+    assert record["micro_seqs"] == [1]
+    assert record["row_ids"] == [1]
+
+
 def test_evaluate_boundary_resets_stale_buffer(tmp_path):
     # Safety net for evaluate-on-train-data: micros buffered outside an
     # optimizer step must never leak into the next step's record.

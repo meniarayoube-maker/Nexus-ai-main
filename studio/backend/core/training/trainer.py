@@ -4157,6 +4157,23 @@ class UnslothTrainer:
                 recorder.mark_event("step_end", state.global_step)
                 recorder.finalize_optimizer_step(state.global_step)
 
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                # Stash only: the metrics reported for THIS step, from the same
+                # logging event the Charts render (loss/grad_norm/lr keys).
+                # Eval summaries and the end-of-run mean carry no "loss" key
+                # and are ignored — exactly like the progress callback does.
+                # No forward/backward/model touch: a dict copy into the sidecar
+                # recorder. Training behavior is untouched by construction.
+                if not logs or "loss" not in logs:
+                    return
+                recorder.note_metrics(
+                    state.global_step,
+                    loss = logs.get("loss"),
+                    smoothed_loss = logs.get("smoothed_loss"),
+                    grad_norm = logs.get("grad_norm"),
+                    learning_rate = logs.get("learning_rate"),
+                )
+
             def on_evaluate(self, args, state, control, **kwargs):
                 recorder.mark_event("evaluate", state.global_step)
                 dropped = recorder.reset()

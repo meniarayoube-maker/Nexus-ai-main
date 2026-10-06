@@ -11,6 +11,8 @@ stdlib-only and collaborators are fakes.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from core.training.composition_log import (
@@ -468,3 +470,267 @@ def test_stamp_and_prune_helpers():
     assert out is stub
     assert pruned == ["source"]
     assert stub.removed == ["source"]
+
+
+def _drive_step(recorder, collator, row_id_pairs, step, metrics=None):
+    """One optimizer step as the loop performs it: collate, log, finalize."""
+    for first, second in row_id_pairs:
+        collator(
+            [
+                {"input_ids": [1], ROW_ID_COLUMN: first},
+                {"input_ids": [2], ROW_ID_COLUMN: second},
+            ]
+        )
+    if metrics is not None:
+        recorder.note_metrics(step, **metrics)
+    return recorder.finalize_optimizer_step(step)
+
+
+def _records_by_step(path):
+    import json as _json
+
+    with open(path, encoding = "utf-8") as handle:
+        return {
+            int(_json.loads(line)["step"]): _json.loads(line)
+            for line in handle
+            if line.strip()
+        }
+
+
+MODULE_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "core", "training", "composition_log.py"
+)
+
+
+def test_step_loss_mapping_exact_value_from_logging_event(tmp_path):
+    # Test 1 — the value in the file IS the logging event's value, ==
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(recorder, collator, [(3, 0)], 6, {"loss": 1.7207})
+        _drive_step(recorder, collator, [(1, 7)], 7, {"loss": 0.4})
+        # Reverse order too (logging event after finalize, the real HF order):
+        # metrics still land on their own step at flush time.
+        collator(
+            [
+                {"input_ids": [1], ROW_ID_COLUMN: 4},
+                {"input_ids": [2], ROW_ID_COLUMN: 5},
+            ]
+        )
+        recorder.finalize_optimizer_step(8)
+        recorder.note_metrics(8, loss = 0.35)
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert saved[6]["loss"] == 1.7207
+    assert saved[6]["row_ids"] == [3, 0]
+    assert saved[8]["loss"] == 0.35
+    assert saved[8]["row_ids"] == [4, 5]
+
+
+def test_step_grad_norm_exact_value(tmp_path):
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(recorder, collator, [(0, 1)], 6, {"grad_norm": 63.9088})
+        _drive_step(recorder, collator, [(2, 3)], 7, {})
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert saved[6]["grad_norm"] == 63.9088
+    assert saved[7]["grad_norm"] is None
+
+
+def test_step_learning_rate_exact_value(tmp_path):
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(recorder, collator, [(0, 1)], 6, {"learning_rate": 1.333e-5})
+        _drive_step(recorder, collator, [(2, 3)], 7, {})
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert saved[6]["learning_rate"] == 1.333e-5
+    assert saved[7]["learning_rate"] is None
+
+
+def test_step_smoothed_loss_present_or_null_never_invented(tmp_path):
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(recorder, collator, [(0, 1)], 6, {"smoothed_loss": 2.316})
+        _drive_step(recorder, collator, [(2, 3)], 7, {})
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert saved[6]["smoothed_loss"] == 2.316
+    # The backend logging event carries no smoothed value (the Charts smooth
+    # client-side), so absence stays an honest null.
+    assert saved[7]["smoothed_loss"] is None
+
+
+def test_metrics_path_never_recomputes_or_touches_model():
+    # Test 5 — static proof: the metrics plumbing cannot forward, backward,
+    # optimize, schedule, or import any training framework, at any level.
+    import ast as _ast
+
+    source = open(MODULE_PATH, encoding = "utf-8").read()
+    tree = _ast.parse(source)
+    import_roots = set()
+    for node in tree.body:
+        if isinstance(node, _ast.Import):
+            import_roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+            import_roots.add(node.module.split(".")[0])
+    assert import_roots <= {
+        "__future__", "json", "math", "os", "time", "traceback", "typing",
+    }, import_roots
+    called_attrs = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute):
+            called_attrs.add(node.func.attr)
+    forbidden = {
+        "forward", "backward", "train", "compute_loss", "zero_grad",
+        "step", "optimizer_step", "training_step",
+    }
+    hits = called_attrs & forbidden
+    assert hits == set(), f"training-loop calls reachable: {hits}"
+
+
+def test_empty_step_keeps_metrics_without_fake_attribution(tmp_path):
+    # Test 6 — Metric exists != examples exist: an empty record still carries
+    # its step metrics, but attribution stays "none".
+    from core.training.composition_log import attribute_steps
+
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(recorder, collator, [], 4, {"loss": 0.5, "grad_norm": 9.0})
+        _drive_step(recorder, collator, [(0, 1)], 5, {"loss": 0.4})
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert saved[4]["loss"] == 0.5
+    assert saved[4]["row_ids"] == []
+    attributed = {
+        entry["step"]: entry
+        for entry in attribute_steps(list(saved.values()))
+    }
+    assert attributed[4]["rule"] == "none"
+    assert attributed[4]["attributed_row_ids"] == []
+
+
+def test_metrics_do_not_perturb_attribution_forensic_flow(tmp_path):
+    # Test 7 — the full 16-step pilot shape driven WITH metrics stashed must
+    # attribute exactly like the metrics-free forensic proof.
+    from core.training.composition_log import attribute_steps
+
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    forensic = {
+        entry["step"]: entry for entry in _forensic_run_records()
+    }
+    try:
+        for step in range(1, 17):
+            micros = forensic[step]["micro_batches"]
+            for first, *rest in micros:
+                pair = (first, rest[0]) if rest else (first, first)
+                collator(
+                    [
+                        {"input_ids": [1], ROW_ID_COLUMN: pair[0]},
+                        {"input_ids": [2], ROW_ID_COLUMN: pair[1]},
+                    ]
+                )
+            recorder.note_metrics(step, loss = 2.0 - step * 0.1)
+            recorder.finalize_optimizer_step(step)
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert [saved[s]["loss"] for s in range(1, 17)] == [
+        pytest.approx(2.0 - s * 0.1) for s in range(1, 17)
+    ]
+    expected_rows = {
+        1: [3, 0], 2: [1, 7], 3: [2, 5], 4: [6, 4],
+        5: [0, 4], 6: [6, 1], 7: [3, 2], 8: [7, 5],
+        9: [0, 1], 10: [6, 7], 11: [4, 5], 12: [3, 2],
+        13: [6, 4], 14: [0, 2], 15: [7, 3], 16: [1, 5],
+    }
+    attributed = {
+        entry["step"]: entry
+        for entry in attribute_steps(list(saved.values()))
+    }
+    for step in range(1, 17):
+        assert attributed[step]["attributed_row_ids"] == expected_rows[step], step
+
+
+def test_resume_metrics_keyed_by_true_step_no_renumber(tmp_path):
+    # Test 8 — resume appends; steps and their metrics never restart at zero.
+    path = str(tmp_path / "composition.jsonl")
+    first = CompositionRecorder(path)
+    try:
+        _drive_step(first, RowIdRecordingCollator(lambda f: f, first),
+                    [(0, 1)], 1, {"loss": 1.0})
+        _drive_step(first, RowIdRecordingCollator(lambda f: f, first),
+                    [(2, 3)], 2, {"loss": 0.9})
+    finally:
+        first.close()
+    second = CompositionRecorder(path)
+    try:
+        _drive_step(second, RowIdRecordingCollator(lambda f: f, second),
+                    [(4, 5)], 3, {"loss": 0.8})
+    finally:
+        second.close()
+    saved = _records_by_step(path)
+    assert sorted(saved) == [1, 2, 3]
+    assert [saved[s]["loss"] for s in (1, 2, 3)] == [1.0, 0.9, 0.8]
+    assert saved[3]["row_ids"] == [4, 5]
+
+
+def test_old_sidecar_without_metrics_stays_readable(tmp_path):
+    # Test 9 — pre-metrics files: no metric keys, still joinable/attributable.
+    from core.training.composition_log import attribute_steps
+
+    path = tmp_path / "composition.jsonl"
+    path.write_text(
+        '{"step": 1, "micro_batches": [[0, 1]], "row_ids": [0, 1]}\n'
+        '{"step": 2, "micro_batches": [], "row_ids": []}\n',
+        encoding = "utf-8",
+    )
+    saved = _records_by_step(str(path))
+    assert saved[1].get("loss") is None
+    joined = join_with_losses(list(saved.values()), [(1, 0.5)])
+    assert joined[0]["loss"] == 0.5
+    attributed = {
+        entry["step"]: entry for entry in attribute_steps(list(saved.values()))
+    }
+    assert attributed[1]["attributed_row_ids"] == [0, 1]
+    # An empty record still borrows the previous record's tail: the step ran
+    # (its loss exists in lossHistory), only its own micros list is empty.
+    assert attributed[2]["attributed_row_ids"] == [0, 1]
+    assert attributed[2]["rule"] == "prev_tail"
+
+
+def test_enriched_record_matches_logging_event_exactly(tmp_path):
+    # Test 10 — all four metrics at once, == not approx, file round-trip.
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(
+            recorder, collator, [(3, 0)], 6,
+            {"loss": 1.7207, "smoothed_loss": 2.316,
+             "grad_norm": 63.9088, "learning_rate": 1.333e-5},
+        )
+        _drive_step(recorder, collator, [(1, 7)], 7, {})
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    record = saved[6]
+    assert record["loss"] == 1.7207
+    assert record["smoothed_loss"] == 2.316
+    assert record["grad_norm"] == 63.9088
+    assert record["learning_rate"] == 1.333e-5
+    assert record["row_ids"] == [3, 0]
+    assert saved[7]["loss"] is None
+    assert saved[7]["smoothed_loss"] is None
+    assert saved[7]["grad_norm"] is None
+    assert saved[7]["learning_rate"] is None

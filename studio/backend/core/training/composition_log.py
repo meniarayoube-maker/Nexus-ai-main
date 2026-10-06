@@ -27,6 +27,7 @@ and online/worker-side tokenization (the id column may not survive it).
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import traceback
@@ -94,11 +95,22 @@ class CompositionRecorder:
     steps are simply history in an append-only file.
     """
 
+    # Training metric keys ever attached to step records. Fixed schema: every
+    # new record carries all four (None when the logging event had no value),
+    # so readers never branch on key presence. Old files simply lack them.
+    METRIC_KEYS = ("loss", "smoothed_loss", "grad_norm", "learning_rate")
+
     def __init__(self, sidecar_path: str, expected_rows: Optional[int] = None) -> None:
         parent = os.path.dirname(os.path.abspath(sidecar_path))
         os.makedirs(parent, exist_ok = True)
         self._path = sidecar_path
         self._handle = open(sidecar_path, "a", encoding = "utf-8")
+        # Metrics captured from training logging events, keyed by TRUE
+        # global_step (never by array position). See note_metrics.
+        self._pending_metrics: Dict[int, Dict[str, Any]] = {}
+        # One-step-delayed flush (see finalize_optimizer_step): the record
+        # built now is written when the NEXT step finalizes (or at close).
+        self._held_record: Optional[Dict[str, Any]] = None
         base, ext = os.path.splitext(sidecar_path)
         if os.path.basename(sidecar_path) == SIDECAR_FILENAME:
             timeline_path = os.path.join(parent, TIMELINE_FILENAME)
@@ -164,8 +176,63 @@ class CompositionRecorder:
         self._pending = []
         return dropped
 
+    def note_metrics(
+        self,
+        global_step: int,
+        *,
+        loss: Any = None,
+        smoothed_loss: Any = None,
+        grad_norm: Any = None,
+        learning_rate: Any = None,
+    ) -> None:
+        """Stash one step's training metrics, keyed by TRUE global_step.
+
+        Values must come straight from the training logging event (the same
+        source the Charts render) — this function never computes, rounds, or
+        invents anything; see _sanitize_metric_value. Never array position:
+        ``logging_steps > 1`` leaves honest gaps instead of shifted numbers.
+        """
+        self._pending_metrics[int(global_step)] = {
+            "loss": _sanitize_metric_value(loss),
+            "smoothed_loss": _sanitize_metric_value(smoothed_loss),
+            "grad_norm": _sanitize_metric_value(grad_norm),
+            "learning_rate": _sanitize_metric_value(learning_rate),
+        }
+
+    def _attach_metrics(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich a built record with stashed metrics for its own step only.
+
+        Later information never leaks across steps: entries keyed by other
+        steps stay parked for their own flush. Missing entries keep None.
+        """
+        known = self._pending_metrics.pop(int(record.get("step", -1)), None) or {}
+        for key in self.METRIC_KEYS:
+            value = known.get(key)
+            if value is not None:
+                record[key] = value
+        return record
+
+    def _write_record(self, record: Dict[str, Any]) -> None:
+        self._handle.write(json.dumps(record) + "\n")
+        self._handle.flush()
+
     def finalize_optimizer_step(self, global_step: int) -> Dict[str, Any]:
-        """Flush buffered micro-batches as one step record. Always writes."""
+        """Build this step's record; write the PREVIOUS step's record first.
+
+        Why the one-step delay: the training logging event for step N fires
+        AFTER step N's step-end callback, so metrics for N only exist once
+        step N+1 finalizes (or the run closes). Enrichment therefore happens
+        at flush time from step-keyed metrics — correct no matter which of
+        the two callbacks fires first. The returned record is the freshly
+        built one (metric keys present, values attached when already known).
+
+        Crash window: a hard kill loses at most the single trailing record;
+        normal completion (including graceful stop) flushes everything via
+        close(). Resume appends new steps; numbering never restarts here.
+        """
+        if self._held_record is not None:
+            held, self._held_record = self._held_record, None
+            self._write_record(self._attach_metrics(held))
         flat: List[int] = [r for _, micro, _, _ in self._pending for r in micro]
         record = {
             "step": int(global_step),
@@ -179,13 +246,23 @@ class CompositionRecorder:
             "row_ids": list(flat),
             "num_micro_batches": len(self._pending),
             "num_rows": len(flat),
+            "loss": None,
+            "smoothed_loss": None,
+            "grad_norm": None,
+            "learning_rate": None,
         }
-        self._handle.write(json.dumps(record) + "\n")
-        self._handle.flush()
         self._pending = []
+        self._attach_metrics(record)
+        self._held_record = record
         return record
 
     def close(self) -> None:
+        if self._held_record is not None:
+            held, self._held_record = self._held_record, None
+            try:
+                self._write_record(self._attach_metrics(held))
+            except Exception:
+                pass
         try:
             self._handle.flush()
         finally:
@@ -403,6 +480,22 @@ def stamp_row_ids(
             f"(found: {names})"
         )
     return [text_field, ROW_ID_COLUMN], list(range(int(num_rows)))
+
+
+def _sanitize_metric_value(value: Any) -> Optional[float]:
+    """Keep a metric exactly as reported, or None when it has no number.
+
+    No rounding, no recomputation, no invention: plain int/float values pass
+    through bit-identical (``==`` holds against the logging event). Booleans,
+    strings, NaN/inf (unrepresentable in strict JSON) and anything else become
+    ``None`` — the honest "unavailable", never a fabricated zero.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    return None
 
 
 def ensure_row_ids(

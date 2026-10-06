@@ -598,8 +598,9 @@ def test_metrics_path_never_recomputes_or_touches_model():
 
 
 def test_empty_step_keeps_metrics_without_fake_attribution(tmp_path):
-    # Test 6 — Metric exists != examples exist: an empty record still carries
-    # its step metrics, but attribution stays "none".
+    # Test 6 — Metric exists != examples exist: step 4's metrics live on in
+    # lossHistory, never in the sidecar (no line written); attribution over
+    # the remaining lines still opens epoch 2 at step 5 via the numbering gap.
     from core.training.composition_log import attribute_steps
 
     recorder = _recorder(tmp_path)
@@ -610,14 +611,15 @@ def test_empty_step_keeps_metrics_without_fake_attribution(tmp_path):
     finally:
         recorder.close()
     saved = _records_by_step(recorder.path)
-    assert saved[4]["loss"] == 0.5
-    assert saved[4]["row_ids"] == []
+    assert 4 not in saved
+    assert saved[5]["loss"] == 0.4
+    assert saved[5]["row_ids"] == [0, 1]
     attributed = {
         entry["step"]: entry
         for entry in attribute_steps(list(saved.values()))
     }
-    assert attributed[4]["rule"] == "none"
-    assert attributed[4]["attributed_row_ids"] == []
+    assert attributed[5]["rule"] == "epoch_first"
+    assert attributed[5]["attributed_row_ids"] == [0, 1]
 
 
 def test_metrics_do_not_perturb_attribution_forensic_flow(tmp_path):
@@ -646,8 +648,11 @@ def test_metrics_do_not_perturb_attribution_forensic_flow(tmp_path):
     finally:
         recorder.close()
     saved = _records_by_step(recorder.path)
-    assert [saved[s]["loss"] for s in range(1, 17)] == [
-        pytest.approx(2.0 - s * 0.1) for s in range(1, 17)
+    # Trailing-epoch empties are never persisted; their steps keep metrics
+    # only in lossHistory, never in this file.
+    assert sorted(saved) == [s for s in range(1, 17) if s not in (4, 8, 12, 16)]
+    assert [saved[s]["loss"] for s in sorted(saved)] == [
+        pytest.approx(2.0 - s * 0.1) for s in sorted(saved)
     ]
     expected_rows = {
         1: [3, 0], 2: [1, 7], 3: [2, 5], 4: [6, 4],
@@ -659,8 +664,16 @@ def test_metrics_do_not_perturb_attribution_forensic_flow(tmp_path):
         entry["step"]: entry
         for entry in attribute_steps(list(saved.values()))
     }
-    for step in range(1, 17):
+    # Gap-tolerant attribution: trailing-epoch steps (4/8/12/16) have no
+    # record at all, yet every surviving step attributes exactly its own
+    # consumed rows — identical rows to the with-empties proof.
+    assert sorted(attributed) == sorted(saved)
+    for step in sorted(saved):
         assert attributed[step]["attributed_row_ids"] == expected_rows[step], step
+    for step in (1, 5, 9, 13):
+        assert attributed[step]["rule"] == "epoch_first", step
+    for step in (4, 8, 12, 16):
+        assert step not in attributed
 
 
 def test_resume_metrics_keyed_by_true_step_no_renumber(tmp_path):
@@ -763,3 +776,103 @@ def test_enriched_record_matches_logging_event_exactly(tmp_path):
     assert saved[7]["smoothed_loss"] is None
     assert saved[7]["grad_norm"] is None
     assert saved[7]["learning_rate"] is None
+
+
+def test_nonempty_record_written_on_both_flush_paths(tmp_path):
+    # A real batch lands in the file whether flushed mid-run (next finalize)
+    # or at close (train end) — with its own metrics, never another's.
+    import json as _json
+
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(recorder, collator, [(0, 1)], 1, {"loss": 1.0})
+        _drive_step(recorder, collator, [(2, 3)], 2, {"loss": 0.9})
+        mid_run = [
+            _json.loads(line)
+            for line in open(recorder.path, encoding = "utf-8")
+            if line.strip()
+        ]
+        assert [r["step"] for r in mid_run] == [1]
+        assert mid_run[0]["loss"] == 1.0
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert sorted(saved) == [1, 2]
+    assert saved[2]["loss"] == 0.9
+    assert saved[2]["row_ids"] == [2, 3]
+
+
+def test_metrics_never_migrate_across_steps(tmp_path):
+    recorder = _recorder(tmp_path)
+    collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+    try:
+        _drive_step(
+            recorder, collator, [(0, 1)], 6,
+            {"loss": 1.7, "grad_norm": 60.0, "learning_rate": 0.01},
+        )
+        _drive_step(
+            recorder, collator, [(2, 3)], 7,
+            {"loss": 0.4, "grad_norm": 20.0, "learning_rate": 0.005},
+        )
+    finally:
+        recorder.close()
+    saved = _records_by_step(recorder.path)
+    assert (saved[6]["loss"], saved[6]["grad_norm"],
+            saved[6]["learning_rate"]) == (1.7, 60.0, 0.01)
+    assert (saved[7]["loss"], saved[7]["grad_norm"],
+            saved[7]["learning_rate"]) == (0.4, 20.0, 0.005)
+
+
+def test_resume_with_metrics_appends_keyed_records(tmp_path):
+    path = str(tmp_path / "composition.jsonl")
+    first = CompositionRecorder(path)
+    try:
+        _drive_step(first, RowIdRecordingCollator(lambda f: f, first),
+                    [(0, 1)], 1, {"loss": 1.0, "grad_norm": 5.0})
+    finally:
+        first.close()
+    second = CompositionRecorder(path)
+    try:
+        _drive_step(second, RowIdRecordingCollator(lambda f: f, second),
+                    [(2, 3)], 2, {"loss": 0.9, "grad_norm": 4.0})
+    finally:
+        second.close()
+    saved = _records_by_step(path)
+    assert sorted(saved) == [1, 2]
+    assert (saved[1]["loss"], saved[2]["loss"]) == (1.0, 0.9)
+    assert (saved[1]["grad_norm"], saved[2]["grad_norm"]) == (5.0, 4.0)
+
+
+def test_gap_input_attributes_identically_to_sentinel_input(tmp_path):
+    # The strongest "rule unchanged" proof: the same 16-step pilot flow,
+    # once WITH trailing-epoch empties and once WITHOUT, must attribute
+    # every surviving step to the exact same rows.
+    from core.training.composition_log import attribute_steps
+
+    with_empties = []
+    without_empties = []
+    for step in range(1, 17):
+        micros = _forensic_run_records()[step - 1]["micro_batches"]
+        flat = [r for micro in micros for r in micro]
+        record = {
+            "step": step, "micro_batches": micros,
+            "micro_seqs": [], "row_ids": flat,
+        }
+        with_empties.append(record)
+        if flat:
+            without_empties.append(record)
+    attributed_full = {
+        entry["step"]: entry for entry in attribute_steps(with_empties)
+    }
+    attributed_gap = {
+        entry["step"]: entry for entry in attribute_steps(without_empties)
+    }
+    for step in range(1, 17):
+        if step in (4, 8, 12, 16):
+            assert step not in attributed_gap
+            continue
+        assert (
+            attributed_gap[step]["attributed_row_ids"]
+            == attributed_full[step]["attributed_row_ids"]
+        ), step

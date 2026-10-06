@@ -213,6 +213,17 @@ class CompositionRecorder:
         return record
 
     def _write_record(self, record: Dict[str, Any]) -> None:
+        # The sidecar is a BATCH-composition log, not a per-global-step log:
+        # records with no actual batch (empty micro_batches/row_ids, e.g. the
+        # trailing record of each epoch) are never persisted. Their step
+        # metrics live on untouched in lossHistory/progress; nothing is moved
+        # to another record and no fake attribution is ever synthesized.
+        if (
+            not record.get("micro_batches")
+            and not record.get("row_ids")
+            and not record.get("num_rows")
+        ):
+            return
         self._handle.write(json.dumps(record) + "\n")
         self._handle.flush()
 
@@ -337,9 +348,10 @@ def attribute_steps(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     Therefore, loss(step N) was computed from:
 
     * the FIRST micro of its own record when the step opens an epoch
-      (detected data-driven: first record overall, or previous record empty —
-      an empty record only ever closes an epoch, since every training step
-      consumes at least one micro-batch); otherwise
+      (detected data-driven: first record overall, previous record empty, or
+      a step-numbering gap where an empty trailing record was suppressed at
+      write time — an empty record only ever closes an epoch, since every
+      training step consumes at least one micro-batch); otherwise
     * the LAST micro of the PREVIOUS step's record.
 
     Returns one entry per input record: ``step``, ``attributed_row_ids``,
@@ -357,7 +369,20 @@ def attribute_steps(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         own_seqs = list(record.get("micro_seqs", []) or [])
         previous = ordered[index - 1] if index > 0 else None
         prev_empty = previous is None or not (previous.get("row_ids") or [])
-        if prev_empty:
+        try:
+            prev_step = (
+                int(previous.get("step", step - 1))
+                if previous is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            prev_step = step - 1
+        gap = (
+            previous is not None
+            and prev_step != step
+            and prev_step != step - 1
+        )
+        if prev_empty or gap:
             if own_micros:
                 seq = (
                     own_seqs[0]

@@ -169,6 +169,57 @@ def test_reset_keeps_arrival_counter_monotonic(tmp_path):
     assert record["row_ids"] == [1]
 
 
+def test_preflight_fingerprint_only_under_probe_frame(tmp_path):
+    recorder = _recorder(tmp_path)
+    try:
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+
+        def _preflight_first_batch(rows):
+            return collator(
+                [{"input_ids": [1], ROW_ID_COLUMN: r} for r in rows]
+            )
+
+        _preflight_first_batch([0])
+        collator([{"input_ids": [2], ROW_ID_COLUMN: 1}])
+        record = recorder.finalize_optimizer_step(1)
+    finally:
+        recorder.close()
+    assert record["micro_via_preflight"] == [True, False]
+    assert len(record["micro_t"]) == 2
+    assert all(isinstance(t, float) for t in record["micro_t"])
+
+
+def test_timeline_events_land_in_separate_file(tmp_path):
+    from core.training.composition_log import CompositionRecorder as _Recorder
+
+    recorder = _Recorder(str(tmp_path / "batch_composition.jsonl"))
+    try:
+        recorder.mark_event("train_begin", 0)
+        recorder.mark_event("step_end", 1)
+        collator = RowIdRecordingCollator(lambda feats: feats, recorder)
+        collator([{"input_ids": [1], ROW_ID_COLUMN: 0}])
+        record = recorder.finalize_optimizer_step(1)
+    finally:
+        recorder.close()
+    # Step records stay clean (no event keys leak into them).
+    assert set(record) >= {
+        "step", "micro_batches", "micro_seqs", "row_ids",
+        "num_micro_batches", "num_rows",
+    }
+    assert "type" not in record and "event" not in record
+    timeline = (
+        tmp_path / "batch_composition_timeline.jsonl"
+    ).read_text(encoding = "utf-8").strip().splitlines()
+    import json as _json
+
+    events = [_json.loads(line) for line in timeline]
+    assert [(e["event"], e["step"]) for e in events] == [
+        ("train_begin", 0),
+        ("step_end", 1),
+    ]
+    assert all(isinstance(e["t"], float) for e in events)
+
+
 def test_evaluate_boundary_resets_stale_buffer(tmp_path):
     # Safety net for evaluate-on-train-data: micros buffered outside an
     # optimizer step must never leak into the next step's record.

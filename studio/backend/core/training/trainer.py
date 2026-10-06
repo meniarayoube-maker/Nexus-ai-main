@@ -4130,21 +4130,35 @@ class UnslothTrainer:
             # on_step_begin fires for their step, so a begin/end gate would
             # record nothing (every batch arrives while capture is still off).
             # Recording is unconditional; eval batches carry no id column.
+            # The mark_event calls below are forensic observation only (timing
+            # correlation in a separate timeline file); they branch nothing.
             def on_train_begin(self, args, state, control, **kwargs):
                 # _preflight_first_batch pulls real batches through this same
                 # wrapped collator before train() starts; drop them so step 1
                 # records only its own micro-batches.
                 dropped = recorder.reset()
+                recorder.mark_event("train_begin", state.global_step)
                 if dropped:
                     logger.info(
-                        f"Batch composition: cleared {dropped} pre-train "
+                        f"Batch composition cleared {dropped} pre-train "
                         "micro-batch(es) before step 1\n"
                     )
 
+            def on_epoch_begin(self, args, state, control, **kwargs):
+                recorder.mark_event("epoch_begin", state.global_step)
+
+            def on_epoch_end(self, args, state, control, **kwargs):
+                recorder.mark_event("epoch_end", state.global_step)
+
+            def on_step_begin(self, args, state, control, **kwargs):
+                recorder.mark_event("step_begin", state.global_step)
+
             def on_step_end(self, args, state, control, **kwargs):
+                recorder.mark_event("step_end", state.global_step)
                 recorder.finalize_optimizer_step(state.global_step)
 
             def on_evaluate(self, args, state, control, **kwargs):
+                recorder.mark_event("evaluate", state.global_step)
                 dropped = recorder.reset()
                 if dropped:
                     logger.warning(
@@ -4153,6 +4167,7 @@ class UnslothTrainer:
                     )
 
             def on_train_end(self, args, state, control, **kwargs):
+                recorder.mark_event("train_end", state.global_step)
                 recorder.close()
 
         self.trainer.add_callback(_CompositionCaptureCallback())

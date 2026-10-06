@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import traceback
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 ROW_ID_COLUMN = "__row_id__"
@@ -97,7 +99,14 @@ class CompositionRecorder:
         os.makedirs(parent, exist_ok = True)
         self._path = sidecar_path
         self._handle = open(sidecar_path, "a", encoding = "utf-8")
-        self._pending: List[Tuple[int, List[int]]] = []
+        base, ext = os.path.splitext(sidecar_path)
+        if os.path.basename(sidecar_path) == SIDECAR_FILENAME:
+            timeline_path = os.path.join(parent, TIMELINE_FILENAME)
+        else:
+            timeline_path = base + "_timeline" + (ext or ".jsonl")
+        self._timeline_path = timeline_path
+        self._timeline_handle = open(timeline_path, "a", encoding = "utf-8")
+        self._pending: List[Tuple[int, List[int], float, bool]] = []
         # Monotonic arrival counter, NEVER reset (not by finalize, not by
         # reset()): it numbers every collator call in arrival order, so a
         # later audit can tell an extra collation apart from a late finalize.
@@ -117,8 +126,34 @@ class CompositionRecorder:
     def record_micro_batch(self, row_ids: Sequence[int]) -> None:
         ids = [int(r) for r in row_ids]
         if ids:
-            self._pending.append((self._micro_seq, ids))
+            # Observation only: wall time + preflight fingerprint per micro.
+            # Never branches training logic; the collator output is unchanged.
+            self._pending.append(
+                (self._micro_seq, ids, time.time(), _collated_via_preflight())
+            )
             self._micro_seq += 1
+
+    def mark_event(self, name: str, global_step: Optional[int] = None) -> None:
+        """Append one lifecycle event (callback timing) to the timeline file.
+
+        Observation only. Kept in a SEPARATE file so step records stay clean
+        and existing readers/joins keep working untouched.
+        """
+        try:
+            self._timeline_handle.write(
+                json.dumps(
+                    {
+                        "type": "event",
+                        "event": str(name),
+                        "step": None if global_step is None else int(global_step),
+                        "t": time.time(),
+                    }
+                )
+                + "\n"
+            )
+            self._timeline_handle.flush()
+        except Exception:
+            pass
 
     def reset(self) -> int:
         """Drop buffered micro-batches (evaluate/predict safety net).
@@ -131,12 +166,16 @@ class CompositionRecorder:
 
     def finalize_optimizer_step(self, global_step: int) -> Dict[str, Any]:
         """Flush buffered micro-batches as one step record. Always writes."""
-        flat: List[int] = [r for _, micro in self._pending for r in micro]
+        flat: List[int] = [r for _, micro, _, _ in self._pending for r in micro]
         record = {
             "step": int(global_step),
-            "micro_batches": [list(micro) for _, micro in self._pending],
+            "micro_batches": [list(micro) for _, micro, _, _ in self._pending],
             # Arrival order of each micro-batch; see _micro_seq contract above.
-            "micro_seqs": [seq for seq, _ in self._pending],
+            "micro_seqs": [seq for seq, _, _, _ in self._pending],
+            # Diagnostic only (forensic run): collation wall time + preflight
+            # fingerprint per micro, parallel to micro_batches.
+            "micro_t": [stamp for _, _, stamp, _ in self._pending],
+            "micro_via_preflight": [via for _, _, _, via in self._pending],
             "row_ids": list(flat),
             "num_micro_batches": len(self._pending),
             "num_rows": len(flat),
@@ -151,9 +190,30 @@ class CompositionRecorder:
             self._handle.flush()
         finally:
             self._handle.close()
+        try:
+            self._timeline_handle.flush()
+        finally:
+            self._timeline_handle.close()
 
 
 SIDECAR_FILENAME = "batch_composition.jsonl"
+TIMELINE_FILENAME = "batch_composition_timeline.jsonl"
+
+# Frame name that proves a collator call came from the pre-train probe
+# (trainer._preflight_first_batch). Checked by function NAME so the check
+# stays stdlib-only and import-free.
+_PREFLIGHT_FRAME_NAME = "_preflight_first_batch"
+
+
+def _collated_via_preflight() -> bool:
+    """True when the current collator call runs under the pre-train probe."""
+    try:
+        for frame in traceback.extract_stack():
+            if frame.name == _PREFLIGHT_FRAME_NAME:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def read_run_composition(

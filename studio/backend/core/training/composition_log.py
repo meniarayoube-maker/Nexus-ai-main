@@ -817,3 +817,46 @@ def resolve_optimizer_steps(
     if flat_in != flat_out:
         raise ValueError("grouping lost or duplicated rows; refusing result")
     return groups, report
+
+
+def present_optimizer_steps(
+    groups: Sequence[Dict[str, Any]],
+    steps: Sequence[int],
+    losses_by_step: Optional[Dict[int, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Attach training metrics to TRUE-step groups by EXPLICIT step numbers.
+
+    ``groups[i]`` belongs to ``global_step steps[i]`` — the caller asserts
+    this correspondence (e.g. from optimizer-step marks or from the
+    lossHistory cadence proof), it is never inferred here. Lengths must match
+    and steps must strictly increase, otherwise ValueError: silently pairing
+    a group with the wrong step's loss would be fabricated attribution.
+    ``losses_by_step`` mirrors ``lossHistory`` (``{global_step: loss}``);
+    missing entries stay an honest ``None``. Read-only presentation.
+    """
+    group_list = list(groups)
+    step_list = [int(s) for s in steps]
+    if len(group_list) != len(step_list):
+        raise ValueError(
+            f"{len(group_list)} groups cannot pair with {len(step_list)} steps"
+        )
+    for first, second in zip(step_list, step_list[1:]):
+        if second <= first:
+            raise ValueError(
+                f"global steps must strictly increase (got {step_list})"
+            )
+    losses = losses_by_step or {}
+    view: List[Dict[str, Any]] = []
+    for group, step in zip(group_list, step_list):
+        view.append(
+            {
+                "optimizer_step": int(group.get("optimizer_step", 0)),
+                "global_step": int(step),
+                "loss": losses.get(step),
+                "micro_seqs": list(group.get("micro_seqs", [])),
+                "row_ids": list(group.get("row_ids", [])),
+                "num_micros": int(group.get("num_micros", 0)),
+                "num_rows": int(group.get("num_rows", 0)),
+            }
+        )
+    return view

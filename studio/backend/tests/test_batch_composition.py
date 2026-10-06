@@ -1212,3 +1212,79 @@ def test_gap_input_attributes_identically_to_sentinel_input(tmp_path):
             attributed_gap[step]["attributed_row_ids"]
             == attributed_full[step]["attributed_row_ids"]
         ), step
+
+
+def _file_b_records():
+    # Verbatim 32-example run shape from the pilot (9,7 micros per record
+    # pair): collation order is the presentation order below.
+    micros = [
+        [11, 22], [3, 17], [23, 14], [6, 12], [24, 31], [19, 0], [30, 29],
+        [16, 15], [5, 4],
+        [8, 26], [27, 25], [13, 2], [28, 9], [7, 1], [18, 21], [10, 20],
+        [16, 7], [18, 19], [20, 24], [21, 17], [10, 6], [26, 14], [25, 1],
+        [30, 28], [27, 11],
+        [5, 23], [15, 13], [8, 4], [0, 31], [2, 9], [12, 29], [22, 3],
+        [24, 8], [18, 11], [4, 17], [7, 9], [30, 2], [1, 15], [19, 3],
+        [28, 31], [14, 27],
+        [6, 16], [25, 5], [29, 23], [21, 12], [0, 22], [13, 26], [10, 20],
+        [14, 30], [12, 13], [7, 2], [21, 27], [3, 23], [16, 11], [4, 19],
+        [17, 22], [18, 10],
+        [28, 24], [15, 0], [26, 5], [25, 1], [6, 8], [29, 9], [20, 31],
+    ]
+    assert len(micros) == 64
+    return [(seq, list(pair)) for seq, pair in enumerate(micros)]
+
+
+def test_file_b_true_steps_are_eight_micro_chunks():
+    # grad_accum=8, batch=2 over 64 collated micros: true optimizer steps are
+    # the 8 sequential chunks — NOT the 9/7 record fragments the flush timing
+    # produced. No empty groups, no lost rows, no duplicates, by construction.
+    from core.training.composition_log import resolve_optimizer_steps
+
+    groups, report = resolve_optimizer_steps(_file_b_records(), 8)
+    assert report["num_groups"] == 8
+    assert report["complete"] is True
+    assert all(g["num_micros"] == 8 and g["num_rows"] == 16 for g in groups)
+    # First true step = first 8 collated micros (its rows, verbatim).
+    assert groups[0]["micro_seqs"] == list(range(8))
+    assert groups[0]["row_ids"] == [
+        11, 22, 3, 17, 23, 14, 6, 12, 24, 31, 19, 0, 30, 29, 16, 15,
+    ]
+    # Second true step starts exactly where the first ended (seq 8, which the
+    # raw file had stranded at the tail of record 1).
+    assert groups[1]["micro_seqs"] == list(range(8, 16))
+    assert groups[1]["row_ids"][:2] == [5, 4]
+
+
+def test_present_optimizer_steps_joins_loss_by_explicit_steps():
+    from core.training.composition_log import (
+        present_optimizer_steps,
+        resolve_optimizer_steps,
+    )
+
+    groups, _ = resolve_optimizer_steps(_file_b_records(), 8)
+    view = present_optimizer_steps(
+        groups, [1, 2, 3, 4, 5, 6, 7, 8],
+        {1: 2.64, 2: 2.6399, 3: 2.6396, 4: 1.66},
+    )
+    assert [row["optimizer_step"] for row in view] == list(range(1, 9))
+    assert [row["global_step"] for row in view] == list(range(1, 9))
+    assert view[0]["loss"] == 2.64
+    assert view[0]["row_ids"] == groups[0]["row_ids"]
+    assert len(view[0]["row_ids"]) == 16
+    # Steps without a logged loss stay honest instead of shifting.
+    assert view[4]["loss"] is None
+    assert view[4]["row_ids"] == groups[4]["row_ids"]
+
+
+def test_present_optimizer_steps_rejects_misaligned_inputs():
+    from core.training.composition_log import (
+        present_optimizer_steps,
+        resolve_optimizer_steps,
+    )
+
+    groups, _ = resolve_optimizer_steps(_file_b_records(), 8)
+    with pytest.raises(ValueError, match = "cannot pair"):
+        present_optimizer_steps(groups, [1, 2, 3])
+    with pytest.raises(ValueError, match = "strictly increase"):
+        present_optimizer_steps(groups[:2], [2, 2])

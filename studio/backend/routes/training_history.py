@@ -413,6 +413,10 @@ async def get_run_per_example_loss(
         return output_present, per_exists, per_records, per_total, steps
 
     output_present, exists, records, total, steps = await asyncio.to_thread(_load)
+
+    from core.training.scoring_jobs import get_scoring_job
+
+    generation = await asyncio.to_thread(get_scoring_job, run_id)
     return PerExampleLossResponse(
         run_id = run_id,
         exists = exists,
@@ -420,6 +424,55 @@ async def get_run_per_example_loss(
         records = records,
         total_records = total,
         steps = steps,
+        generation = generation,
+    )
+
+
+@router.post(
+    "/runs/{run_id}/per-example-loss/generate",
+    response_model = PerExampleGenerateResponse,
+)
+async def generate_run_per_example_loss(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
+):
+    """Start per-example scoring for a run (user-triggered only).
+
+    Nothing runs automatically: this endpoint validates synchronously (run
+    exists, output readable, GPU free, no duplicate job) and only then
+    spawns one background thread that scores the ALREADY-SAVED checkpoint.
+    Refusals are values (``accepted=false`` + reason), never silent: the UI
+    displays the message directly.
+    """
+    from core.training.scoring_jobs import start_scoring_job
+    from core.training.training import get_training_backend
+
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
+
+    output_dir = (run.get("output_dir") or "").strip()
+
+    def _start():
+        from core.training.scoring_jobs import get_scoring_job as _get
+
+        outcome = start_scoring_job(
+            run_id,
+            output_dir,
+            training_active_check = (
+                lambda: get_training_backend().is_training_active()
+            ),
+        )
+        return outcome, _get(run_id)
+
+    outcome, job = await asyncio.to_thread(_start)
+    return PerExampleGenerateResponse(
+        run_id = run_id,
+        accepted = bool(outcome.get("accepted", False)),
+        status = str(outcome.get("status", job.get("status", "error") if job else "error")),
+        message = str(outcome.get("message", "")),
+        job = job,
     )
 
 

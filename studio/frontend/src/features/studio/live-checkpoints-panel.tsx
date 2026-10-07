@@ -14,6 +14,7 @@
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  generatePerExampleLoss,
   getBatchComposition,
   getPerExampleLoss,
   useTrainingActions,
@@ -383,6 +384,7 @@ export function LiveCheckpointsPanel({
 type PerExampleState =
   | { status: "idle" }
   | { status: "loading" }
+  | { status: "generating"; done: number; total: number; message: string }
   | { status: "ready"; data: PerExampleLossResponse }
   | { status: "empty"; outputPresent: boolean }
   | { status: "error"; message: string };
@@ -417,8 +419,17 @@ function PerExampleLossSection({
   const [search, setSearch] = useState("");
   const [ascending, setAscending] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPolling = () => {
+    if (pollTimer.current !== null) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  };
 
   useEffect(() => {
+    stopPolling();
     setState({ status: "idle" });
     setSelectedStep(null);
     setSearch("");
@@ -432,6 +443,7 @@ function PerExampleLossSection({
   useEffect(
     () => () => {
       abortRef.current?.abort();
+      stopPolling();
     },
     [],
   );
@@ -465,6 +477,71 @@ function PerExampleLossSection({
         message: err instanceof Error ? err.message : "Load failed.",
       });
     }
+  };
+
+  const pollGeneration = async () => {
+    pollTimer.current = null;
+    let res;
+    try {
+      res = await getPerExampleLoss(runId);
+    } catch {
+      // Transient failure: keep polling; a fatal one surfaces on Load.
+      pollTimer.current = setTimeout(() => {
+        void pollGeneration();
+      }, 3000);
+      return;
+    }
+    const generation = res.generation ?? null;
+    if (!generation || generation.status === "done") {
+      await handleLoad();
+      return;
+    }
+    if (generation.status === "error") {
+      setState({
+        status: "error",
+        message: generation.message || "Score generation failed.",
+      });
+      return;
+    }
+    setState({
+      status: "generating",
+      done: generation.done,
+      total: generation.total,
+      message: generation.message,
+    });
+    pollTimer.current = setTimeout(() => {
+      void pollGeneration();
+    }, 3000);
+  };
+
+  const handleGenerate = async () => {
+    if (state.status === "loading" || state.status === "generating") return;
+    stopPolling();
+    setState({
+      status: "generating",
+      done: 0,
+      total: 0,
+      message: "Requesting score generation…",
+    });
+    let res;
+    try {
+      res = await generatePerExampleLoss(runId);
+    } catch (err) {
+      setState({
+        status: "error",
+        message: err instanceof Error ? err.message : "Generate failed.",
+      });
+      return;
+    }
+    if (!res.accepted) {
+      // Refusals (GPU busy, duplicate job, unreadable output) are values,
+      // displayed verbatim — never silent.
+      setState({ status: "error", message: res.message });
+      return;
+    }
+    pollTimer.current = setTimeout(() => {
+      void pollGeneration();
+    }, 2000);
   };
 
   const handleDownload = async () => {
@@ -583,6 +660,15 @@ function PerExampleLossSection({
           >
             {state.status === "error" ? "Retry" : "Load results"}
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void handleGenerate()}
+            className="gap-1.5 h-7 text-ui-11"
+          >
+            Generate scores
+          </Button>
           {state.status === "error" && (
             <span className="text-ui-11 text-destructive">{state.message}</span>
           )}
@@ -607,15 +693,45 @@ function PerExampleLossSection({
               ? `Training output found at ${outputDir} — generate scores to enable this view.`
               : "No training output found for this run."}
           </p>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void handleLoad()}
-            className="gap-1.5 h-7 text-ui-11"
-          >
-            Retry
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            {state.outputPresent && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void handleGenerate()}
+                className="gap-1.5 h-7 text-ui-11"
+              >
+                Generate scores
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => void handleLoad()}
+              className="gap-1.5 h-7 text-ui-11"
+            >
+              Retry
+            </Button>
+          </div>
+          {state.outputPresent && (
+            <p className="text-ui-10 text-muted-foreground/80">
+              Scores the saved checkpoint on this device (needs free GPU).
+            </p>
+          )}
+        </div>
+      )}
+
+      {state.status === "generating" && (
+        <div className="mt-2 flex items-center gap-2 text-ui-11 text-muted-foreground">
+          <Spinner className="size-3.5" />
+          <span>
+            {state.total > 0
+              ? `Scoring ${state.done}/${state.total}…`
+              : "Starting score generation…"}
+            {state.message ? ` ${state.message}` : ""}
+          </span>
         </div>
       )}
 

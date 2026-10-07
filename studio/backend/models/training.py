@@ -935,6 +935,15 @@ class PerExampleStepView(BaseModel):
     entries: List[PerExampleStepEntry] = Field(default_factory = list)
 
 
+class PerExampleGeneration(BaseModel):
+    """Background scoring job state for a run (in-memory, ephemeral)."""
+
+    status: str = "queued"
+    done: int = 0
+    total: int = 0
+    message: str = ""
+
+
 class PerExampleLossResponse(BaseModel):
     """Per-example scores for a run, plus the step-joined view.
 
@@ -949,6 +958,17 @@ class PerExampleLossResponse(BaseModel):
     records: List[PerExampleLossRecord] = Field(default_factory = list)
     total_records: int = 0
     steps: List[PerExampleStepView] = Field(default_factory = list)
+    generation: Optional[PerExampleGeneration] = None
+
+
+class PerExampleGenerateResponse(BaseModel):
+    """Reply to a user-triggered scoring request (never silent)."""
+
+    run_id: str
+    accepted: bool
+    status: str = "error"
+    message: str = ""
+    job: Optional[PerExampleGeneration] = None
 
 
 class TrainingRunDeleteResponse(BaseModel):

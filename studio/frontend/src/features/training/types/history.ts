@@ -119,4 +119,20 @@ export interface PerExampleLossResponse {
   records: PerExampleLossRecord[];
   total_records: number;
   steps: PerExampleStepView[];
+  generation?: PerExampleGeneration | null;
+}
+
+export interface PerExampleGeneration {
+  status: string;
+  done: number;
+  total: number;
+  message: string;
+}
+
+export interface PerExampleGenerateResponse {
+  run_id: string;
+  accepted: boolean;
+  status: string;
+  message: string;
+  job: PerExampleGeneration | null;
 }

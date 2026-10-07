@@ -78,12 +78,15 @@ export type {
   PerExampleStepEntry,
   PerExampleStepView,
   PerExampleLossResponse,
+  PerExampleGeneration,
+  PerExampleGenerateResponse,
 } from "./types/history";
 export {
   listTrainingRuns,
   getTrainingRun,
   getBatchComposition,
   getPerExampleLoss,
+  generatePerExampleLoss,
   deleteTrainingRun,
   renameTrainingRun,
   restoreTrainingRunFromKaggle,

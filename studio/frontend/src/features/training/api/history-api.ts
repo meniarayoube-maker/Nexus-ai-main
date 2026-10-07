@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   BatchCompositionResponse,
+  PerExampleGenerateResponse,
   PerExampleLossResponse,
   TrainingRunDeleteResponse,
   TrainingRunDetailResponse,
@@ -109,6 +110,17 @@ export async function getPerExampleLoss(
     { signal },
   );
   return parseJson<PerExampleLossResponse>(response);
+}
+
+export async function generatePerExampleLoss(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<PerExampleGenerateResponse> {
+  const response = await authFetch(
+    `/api/train/runs/${encodeURIComponent(runId)}/per-example-loss/generate`,
+    { method: "POST", signal },
+  );
+  return parseJson<PerExampleGenerateResponse>(response);
 }
 
 export async function deleteTrainingRun(

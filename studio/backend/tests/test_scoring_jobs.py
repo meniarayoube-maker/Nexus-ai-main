@@ -305,10 +305,45 @@ def test_jsonl_reader_names_file_line_and_preview(tmp_path):
     with _pytest.raises(ValueError, match = "bad.jsonl.*line 2"):
         read_jsonl_rows(str(bad))
 
-    not_obj = tmp_path / "array.jsonl"
+    not_obj = tmp_path / "line.jsonl"
     not_obj.write_text('[1, 2]\n', encoding = "utf-8")
     with _pytest.raises(ValueError, match = "must be a JSON object"):
         read_jsonl_rows(str(not_obj))
+
+
+def test_json_array_files_match_training_loader(tmp_path):
+    # The training pipeline (datasets json loader) accepts top-level arrays;
+    # scoring must accept exactly the same files it trained on.
+    from core.training.scoring_jobs import read_jsonl_rows
+
+    import pytest as _pytest
+
+    pretty = tmp_path / "pretty.jsonl"
+    pretty.write_text(
+        '[\n  {"a": 1,\n   "messages": [{"content": "hi"}]},\n  {"a": 2}\n]\n',
+        encoding = "utf-8",
+    )
+    rows = read_jsonl_rows(str(pretty))
+    assert [r["a"] for r in rows] == [1, 2]
+    assert rows[0]["messages"] == [{"content": "hi"}]
+
+    single_line = tmp_path / "flat.jsonl"
+    single_line.write_text('[{"a": 1}, {"a": 2}]', encoding = "utf-8")
+    assert [r["a"] for r in read_jsonl_rows(str(single_line))] == [1, 2]
+
+    # A single top-level object is valid JSONL content (one row).
+    obj_file = tmp_path / "obj.jsonl"
+    obj_file.write_text('{"a": 1}', encoding = "utf-8")
+    assert read_jsonl_rows(str(obj_file)) == [{"a": 1}]
+
+    bad_item = tmp_path / "mixed.jsonl"
+    bad_item.write_text('[{"a": 1}, 42]', encoding = "utf-8")
+    with _pytest.raises(ValueError, match = "item 1 must be a JSON object"):
+        read_jsonl_rows(str(bad_item))
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("\n  \n", encoding = "utf-8")
+    assert read_jsonl_rows(str(empty)) == []
 
 
 def test_read_per_example_records_tolerates_absent_files(tmp_path):

@@ -220,32 +220,59 @@ def _resolve_dataset_file(run_config: Dict[str, Any]) -> str:
 
 
 def read_jsonl_rows(dataset_file: str) -> List[Dict[str, Any]]:
-    """Read a JSONL dataset file with file/line-precise errors.
+    """Read a JSON dataset file with file/line-precise errors.
 
-    Raw ``json.loads`` failures look like ``Expecting value: line 2 column
-    1`` with no hint of WHICH file or line; that exact cryptic message is
-    what users saw. Every failure here names the file, the 1-based line
+    Accepts both shapes the training pipeline accepts (mirroring the
+    ``datasets`` json loader): JSONL (one object per line) and a top-level
+    JSON array (pretty-printed or single-line). Raw ``json.loads`` failures
+    look like ``Expecting value: line 2 column 1`` with no hint of WHICH
+    file or line; every failure here names the file, the 1-based line
     number, and a preview — and blank lines stay skippable, never fatal.
     """
-    rows: List[Dict[str, Any]] = []
-    with open(dataset_file, "r", encoding = "utf-8") as handle:
-        for lineno, line in enumerate(handle, 1):
-            if not line.strip():
-                continue
-            try:
-                parsed = json.loads(line)
-            except ValueError as exc:
-                preview = line.strip()[:120]
+    with open(dataset_file, "r", encoding = "utf-8-sig") as handle:
+        text = handle.read()
+    if not text.strip():
+        return []
+    if text.lstrip()[:1] == "[":
+        try:
+            parsed_file = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(
+                f"dataset file '{dataset_file}' is not valid JSON "
+                f"({exc})"
+            ) from exc
+        if not isinstance(parsed_file, list):
+            raise ValueError(
+                f"dataset file '{dataset_file}' must be a JSON array of "
+                f"objects, got {type(parsed_file).__name__}"
+            )
+        rows: List[Dict[str, Any]] = []
+        for index, item in enumerate(parsed_file):
+            if not isinstance(item, dict):
                 raise ValueError(
-                    f"dataset file '{dataset_file}' line {lineno} is not "
-                    f"valid JSON ({exc}); preview: {preview!r}"
-                ) from exc
-            if not isinstance(parsed, dict):
-                raise ValueError(
-                    f"dataset file '{dataset_file}' line {lineno} must be a "
-                    f"JSON object, got {type(parsed).__name__}"
+                    f"dataset file '{dataset_file}' item {index} must be a "
+                    f"JSON object, got {type(item).__name__}"
                 )
-            rows.append(parsed)
+            rows.append(item)
+        return rows
+    rows = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError as exc:
+            preview = line.strip()[:120]
+            raise ValueError(
+                f"dataset file '{dataset_file}' line {lineno} is not "
+                f"valid JSON ({exc}); preview: {preview!r}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"dataset file '{dataset_file}' line {lineno} must be a "
+                f"JSON object, got {type(parsed).__name__}"
+            )
+        rows.append(parsed)
     return rows
 
 

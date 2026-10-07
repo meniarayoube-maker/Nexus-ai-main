@@ -190,6 +190,26 @@ def masked_nll(
     return total / count, count
 
 
+def shift_labels_for_causal_lm(
+    input_ids: Sequence[int], mask: Sequence[int]
+) -> List[int]:
+    """Align labels the way Hugging Face causal-LM loss does.
+
+    ``logits[i]`` predicts token ``i+1``, so position ``i`` trains on
+    ``input_ids[i + 1]`` when that next token is unmasked — never on the
+    token sitting in its own context. Position 0 is therefore never scored
+    and the returned list is one shorter than the input. Without this shift
+    the numbers are not comparable to any training loss; uniform-logit unit
+    tests cannot catch its absence, which is why it is tested explicitly.
+    """
+    ids = [int(v) for v in input_ids]
+    flags = [1 if m else 0 for m in mask]
+    return [
+        ids[index + 1] if flags[index + 1] else -100
+        for index in range(len(ids) - 1)
+    ]
+
+
 def tokenize_and_mask(
     tokenizer: Any,
     text: str,
@@ -197,13 +217,16 @@ def tokenize_and_mask(
     instruction_ids: Optional[Sequence[int]],
     max_seq_length: int,
 ) -> Tuple[List[int], List[int]]:
-    """Tokenize (no truncation here), keep the head, mask response spans."""
+    """Tokenize (no truncation here), keep the head, mask, then HF-shift."""
     encoding = tokenizer(text, add_special_tokens = True)
     input_ids = [int(v) for v in encoding["input_ids"]]
     cap = max(1, int(max_seq_length or 2048))
     input_ids = input_ids[:cap]
-    labels = mask_response_spans(input_ids, response_ids, instruction_ids)
-    return input_ids, labels
+    mask = [
+        0 if label < 0 else 1
+        for label in mask_response_spans(input_ids, response_ids, instruction_ids)
+    ]
+    return input_ids, shift_labels_for_causal_lm(input_ids, mask)
 
 
 def prepare_scoring_texts(
@@ -446,8 +469,11 @@ def score_prepared_text(
             tokenizer, text, response_ids, instruction_ids, max_seq_length
         )
         if not apply_masking:
-            # Training ran on full sequences: every token trains.
-            labels = list(input_ids)
+            # Training ran on full sequences: every token trains — still
+            # through the causal shift (position i trains on input_ids[i+1]).
+            labels = shift_labels_for_causal_lm(
+                input_ids, [1] * len(input_ids)
+            )
             score.masking_source = (
                 f"{masking_source}-unmasked" if masking_source else "unmasked"
             )

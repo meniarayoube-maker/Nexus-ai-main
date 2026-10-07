@@ -232,7 +232,19 @@ def test_tokenize_and_mask_end_to_end_ids():
     tokenizer = FakeTokenizer({"u": 1, "hi": 2, "a": 3, "yo": 4})
     ids, labels = tokenize_and_mask(tokenizer, "u hi a yo", [3], [1], 2048)
     assert ids == [1, 2, 3, 4]
-    assert labels == [-100, -100, 3, 4]
+    # HF shift: position i trains on input_ids[i + 1]; position 0 is never
+    # scored even though the "u" region is unmasked in the raw mask.
+    assert labels == [-100, 3, 4]
+
+
+def test_causal_shift_parity_with_hf_convention():
+    from core.training.offline_scoring import shift_labels_for_causal_lm
+
+    # All-trainable 3-token input: first token never scored, last token
+    # predicted from the previous logits (labels length == inputs - 1).
+    assert shift_labels_for_causal_lm([5, 6, 7], [1, 1, 1]) == [6, 7]
+    assert shift_labels_for_causal_lm([5], [1]) == []
+    assert shift_labels_for_causal_lm([], []) == []
 
 
 def _stub_zoo(monkeypatch, parts=None, raises=False):
@@ -292,7 +304,7 @@ def test_masking_source_recorded_per_record(monkeypatch):
     )
     assert records[0]["masking_source"] == "auto"
     assert records[0]["status"] == "scored"
-    assert records[0]["num_loss_tokens"] == 2
+    assert records[0]["num_loss_tokens"] == 1
 
 
 def test_apply_masking_off_scores_full_sequences():
@@ -305,7 +317,7 @@ def test_apply_masking_off_scores_full_sequences():
         format_fn = fake_format,
     )
     assert records[0]["status"] == "scored"
-    assert records[0]["num_loss_tokens"] == 2
+    assert records[0]["num_loss_tokens"] == 1
     # Convention "<source>-unmasked": no markers were resolvable AND masking
     # was bypassed per run config — both facts preserved, not just one.
     assert records[0]["masking_source"] == "none-unmasked"

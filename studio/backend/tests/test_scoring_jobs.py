@@ -201,6 +201,49 @@ def test_terminal_jobs_pruned_after_ttl(tmp_path):
     assert run_id not in _jobs._JOBS
 
 
+def test_scoring_source_upload_local_and_missing(tmp_path):
+    from core.training.scoring_jobs import _resolve_scoring_source
+
+    dataset_file = tmp_path / "data.jsonl"
+    dataset_file.write_text('{"a": 1}\n', encoding = "utf-8")
+    kind, spec = _resolve_scoring_source({
+        "dataset_source": "upload", "local_datasets": [str(dataset_file)],
+    })
+    assert kind == "upload"
+    assert spec["files"] == [str(dataset_file)]
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match = "looked in"):
+        _resolve_scoring_source({
+            "dataset_source": "upload",
+            "local_datasets": ["no-such-file.jsonl"],
+        })
+
+
+def test_scoring_source_huggingface_and_rejections():
+    import pytest as _pytest
+
+    from core.training.scoring_jobs import _resolve_scoring_source
+
+    kind, spec = _resolve_scoring_source({
+        "dataset_source": "huggingface", "hf_dataset": "org/ds",
+        "subset": "cfg", "train_split": "validation", "hf_token": "tok",
+    })
+    assert kind == "huggingface"
+    assert spec == {"hf_dataset": "org/ds", "subset": "cfg",
+                    "train_split": "validation", "hf_token": "tok"}
+    # Fallback when the source flag is missing but an id exists.
+    kind, spec = _resolve_scoring_source({"hf_dataset": "org/ds"})
+    assert kind == "huggingface" and spec["train_split"] == "train"
+    with _pytest.raises(ValueError, match = "no.*hf_dataset id"):
+        _resolve_scoring_source({"dataset_source": "huggingface"})
+    with _pytest.raises(ValueError, match = "supports local/upload"):
+        _resolve_scoring_source({"dataset_source": "s3"})
+    with _pytest.raises(ValueError, match = "no usable dataset"):
+        _resolve_scoring_source({})
+
+
 def test_read_per_example_records_tolerates_absent_files(tmp_path):
     from core.training.offline_scoring import read_per_example_records
 

@@ -97,26 +97,57 @@ def _read_run_config(output_dir: str) -> Dict[str, Any]:
     return data
 
 
-def _resolve_dataset_file(run_config: Dict[str, Any]) -> str:
-    """Local dataset file backing this run (upload/local sources only)."""
+def _resolve_scoring_source(run_config: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Decide HOW to load a run's dataset rows (pure: no I/O beyond exists checks).
+
+    Returns ``("upload", {"files": [...]})`` for local files or
+    ``("huggingface", {"hf_dataset": ..., "subset": ..., "train_split": ...,
+    "hf_token": ...})``. Anything else (s3, unknown, or nothing usable)
+    raises a message that names exactly what was found, so the UI can show
+    why scoring refused instead of failing silently.
+    """
     source = str(run_config.get("dataset_source") or "").strip().lower()
     names = [
         str(item or "").strip()
         for item in (run_config.get("local_datasets") or [])
         if str(item or "").strip()
     ]
-    if source not in ("upload", "local", ""):
+    hf_dataset = str(run_config.get("hf_dataset") or "").strip()
+    if source in ("upload", "local", "") and names:
+        return "upload", {"files": _resolve_local_files(names)}
+    if source == "huggingface" or (not names and hf_dataset):
+        if not hf_dataset:
+            raise ValueError(
+                "run uses a Hugging Face dataset but run-config has no "
+                "hf_dataset id"
+            )
+        return "huggingface", {
+            "hf_dataset": hf_dataset,
+            "subset": (str(run_config.get("subset") or "").strip() or None),
+            "train_split": (
+                str(run_config.get("train_split") or "").strip() or "train"
+            ),
+            "hf_token": run_config.get("hf_token") or None,
+        }
+    if source not in ("upload", "local", "", "huggingface"):
         raise ValueError(
-            f"manual scoring supports local/upload dataset files "
+            f"scoring supports local/upload files and Hugging Face datasets "
             f"(run uses dataset_source={source!r})"
         )
-    if not names:
-        raise ValueError("run-config has no local_datasets entries")
+    raise ValueError(
+        "run-config has no usable dataset reference "
+        "(no local_datasets entries and no hf_dataset id)"
+    )
+
+
+def _resolve_local_files(names: List[str]) -> List[str]:
+    """First existing file per name (absolute, cwd-relative, uploads roots)."""
     roots = [
         "",
         "/root/.unsloth/studio/assets/datasets/uploads",
         "/content/Nexus-ai-main/studio/backend/assets/datasets/uploads",
     ]
+    resolved: List[str] = []
     tried: List[str] = []
     for name in names:
         candidates = [name]
@@ -126,13 +157,33 @@ def _resolve_dataset_file(run_config: Dict[str, Any]) -> str:
                 for root in roots
                 if root
             )
-        for candidate in candidates:
-            tried.append(candidate)
-            if candidate and os.path.isfile(candidate):
-                return candidate
-    raise ValueError(
-        "dataset file not found for scoring; looked in: " + "; ".join(tried[:8])
-    )
+        found = next(
+            (candidate for candidate in candidates
+             if candidate and os.path.isfile(candidate)),
+            "",
+        )
+        tried.extend(candidates)
+        if not found:
+            raise ValueError(
+                "dataset file not found for scoring; looked in: "
+                + "; ".join(tried[:8])
+            )
+        resolved.append(found)
+    return resolved
+
+
+def _resolve_dataset_file(run_config: Dict[str, Any]) -> str:
+    """Backward-compatible single-file resolution for upload runs."""
+    kind, spec = _resolve_scoring_source(run_config)
+    if kind != "upload":
+        raise ValueError(
+            "manual scoring supports local/upload dataset files "
+            f"(run uses dataset_source={run_config.get('dataset_source')!r})"
+        )
+    files = spec.get("files") or []
+    if not files:
+        raise ValueError("run-config has no local_datasets entries")
+    return files[0]
 
 
 def check_row_cap(count: int) -> None:
@@ -175,6 +226,45 @@ def _default_load_rows(dataset_file: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def _load_hf_rows(
+    hf_dataset: str,
+    subset: Optional[str],
+    train_split: str,
+    hf_token: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Stream a Hugging Face dataset up to the scoring cap (lazy import)."""
+    from itertools import islice
+
+    from datasets import load_dataset
+
+    load_kwargs: Dict[str, Any] = {
+        "path": hf_dataset.strip(),
+        "split": (train_split or "train"),
+        "streaming": True,
+        "token": hf_token,
+    }
+    if (subset or "").strip():
+        load_kwargs["name"] = subset.strip()
+    try:
+        streamed = load_dataset(**load_kwargs)
+    except Exception as exc:
+        raise ValueError(
+            f"Could not load dataset '{hf_dataset}' for scoring: {exc}"
+        ) from exc
+    rows = [dict(row) for row in islice(streamed, MAX_SCORING_ROWS + 1)]
+    if len(rows) > MAX_SCORING_ROWS:
+        raise ValueError(
+            f"dataset '{hf_dataset}' exceeds the scoring cap "
+            f"({MAX_SCORING_ROWS} rows); slice it first"
+        )
+    if not rows:
+        raise ValueError(
+            f"dataset '{hf_dataset}' returned no rows for split "
+            f"'{train_split}'"
+        )
+    return rows
+
+
 def _default_run_scoring(
     output_dir: str,
     run_config: Dict[str, Any],
@@ -203,15 +293,27 @@ def _default_run_scoring(
         trust_remote_code = bool(run_config.get("trust_remote_code", False)),
     )
     try:
-        with open(dataset_file, "r", encoding = "utf-8") as handle:
-            rows = [
-                json.loads(line) for line in handle if line.strip()
-            ]
-        if not rows and os.path.splitext(dataset_file)[1].lower() != ".jsonl":
-            rows = _default_load_rows(dataset_file)
+        kind, spec = _resolve_scoring_source(run_config)
+        rows: List[Dict[str, Any]] = []
+        if kind == "huggingface":
+            rows = _load_hf_rows(
+                spec["hf_dataset"], spec.get("subset"),
+                spec.get("train_split") or "train", spec.get("hf_token"),
+            )
+        else:
+            for dataset_file in spec.get("files", []):
+                if os.path.splitext(dataset_file)[1].lower() in (
+                    ".json", ".jsonl",
+                ):
+                    with open(dataset_file, "r", encoding = "utf-8") as handle:
+                        rows.extend(
+                            json.loads(line) for line in handle if line.strip()
+                        )
+                else:
+                    rows.extend(_default_load_rows(dataset_file))
         check_row_cap(len(rows))
         if not rows:
-            raise ValueError("dataset file contains no rows")
+            raise ValueError("dataset contains no rows to score")
         config = OfflineScoreConfig(
             checkpoint = output_dir, max_seq_length = max_len
         )

@@ -402,7 +402,8 @@ def _default_run_scoring(
         if not rows:
             raise ValueError("dataset contains no rows to score")
         config = OfflineScoreConfig(
-            checkpoint = output_dir, max_seq_length = max_len
+            checkpoint = output_dir, max_seq_length = max_len,
+            apply_masking = bool(run_config.get("train_on_completions", True)),
         )
         collected: List[Dict[str, Any]] = []
         chunk = 4

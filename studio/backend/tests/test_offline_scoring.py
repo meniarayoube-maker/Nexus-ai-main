@@ -25,6 +25,7 @@ from core.training.offline_scoring import (
     find_marker_spans,
     masked_nll,
     mask_response_spans,
+    resolve_markers,
     score_rows,
     tokenize_and_mask,
     write_records_jsonl,
@@ -92,7 +93,7 @@ def test_metadata_never_lost_or_invented():
     records = score_rows(
         rows, config = CONFIG, model_name = "m",
         tokenizer = FakeTokenizer({"<T>": 1, "hi": 2, "yo": 3, "</T>": 4}),
-        forward_fn = _forward_capturing(captured, [[[0.0, 0.0, 0.0, 0.0, 0.0]] * 3]),
+        forward_fn = _forward_capturing(captured, [[[0.0, 0.0, 0.0, 0.0, 0.0] for _ in range(3)]]),
         format_fn = fake_format,
     )
     assert [r["example_id"] for r in records] == ["ex-1", "ex-2"]
@@ -109,7 +110,7 @@ def test_same_chat_template_reaches_scoring_verbatim():
     score_rows(
         [{"messages": [{"content": "hi"}]}],
         config = CONFIG, model_name = "model-x", tokenizer = tokenizer,
-        forward_fn = _forward_capturing(captured, [[[0.0] * 4]] * 3),
+        forward_fn = _forward_capturing(captured, [[[0.0] * 4 for _ in range(3)]]),
         format_fn = fake_format,
     )
     assert fake_format.seen[-1] == {"model_name": "model-x", "format_type": "auto"}
@@ -125,7 +126,7 @@ def test_same_truncation_limit_applies_before_scoring():
     records = score_rows(
         [{"messages": [{"content": " ".join(f"w{i}" for i in range(10))}]}],
         config = config, model_name = "m", tokenizer = tokenizer,
-        forward_fn = _forward_capturing(captured, [[[0.0] * 20]] * 10),
+        forward_fn = _forward_capturing(captured, [[[0.0] * 20 for _ in range(10)]]),
         format_fn = lambda rows, **kw: {
             "dataset": [{**r, "text": " ".join(f"w{i}" for i in range(10))} for r in rows],
             "success": True, "warnings": [], "errors": [],
@@ -161,7 +162,7 @@ def test_row_without_loss_tokens_records_null_never_zero(tmp_path):
     records = score_rows(
         [{"messages": [{"content": "a b"}], "example_id": "empty"}],
         config = CONFIG, model_name = "m", tokenizer = tokenizer,
-        forward_fn = lambda tok, ids: [[[0.0, 0.0]] * len(ids)],
+        forward_fn = lambda tok, ids: [[[0.0, 0.0] for _ in ids]],
         format_fn = fake_format,
     )
     assert len(records) == 1
@@ -182,7 +183,7 @@ def test_records_joinable_by_row_and_example_id():
     records = score_rows(
         rows, config = CONFIG, model_name = "m",
         tokenizer = FakeTokenizer({"<T>": 1, "hi": 2, "</T>": 3}),
-        forward_fn = lambda tok, ids: [[[0.0] * 4]] * len(ids),
+        forward_fn = lambda tok, ids: [[[0.0] * 4 for _ in ids]],
         format_fn = fake_format,
     )
     assert [r["row_id"] for r in records] == [0, 1, 2]
@@ -232,6 +233,83 @@ def test_tokenize_and_mask_end_to_end_ids():
     ids, labels = tokenize_and_mask(tokenizer, "u hi a yo", [3], [1], 2048)
     assert ids == [1, 2, 3, 4]
     assert labels == [-100, -100, 3, 4]
+
+
+def _stub_zoo(monkeypatch, parts=None, raises=False):
+    import sys as _sys
+    import types as _types
+
+    def _detect(tokenizer):
+        if raises:
+            raise RuntimeError("no template detected (simulated)")
+        return parts
+
+    package = _types.ModuleType("unsloth_zoo")
+    package.__path__ = []
+    submodule = _types.ModuleType("unsloth_zoo.dataset_utils")
+    submodule.get_chat_template_parts = _detect
+    monkeypatch.setitem(_sys.modules, "unsloth_zoo", package)
+    monkeypatch.setitem(_sys.modules, "unsloth_zoo.dataset_utils", submodule)
+
+
+def test_resolve_auto_detection_wins_like_training(monkeypatch):
+    # Training (apply_completion_masking) tries zoo auto-detection FIRST via
+    # unsloth_zoo.dataset_utils; the scorer must use the same precedence and
+    # the same import path (a top-level unsloth_zoo import is NOT equivalent).
+    _stub_zoo(monkeypatch, parts = ("INST_MARK", "RESP_MARK"))
+    tokenizer = FakeTokenizer({"INST_MARK": 11, "RESP_MARK": 22})
+    instr, resp, source = resolve_markers(tokenizer, "any-model")
+    assert source == "auto"
+    assert instr == [11]
+    assert resp == [22]
+
+
+def test_resolve_explicit_strings_win_over_everything(monkeypatch):
+    _stub_zoo(monkeypatch, parts = ("INST_MARK", "RESP_MARK"))
+    tokenizer = FakeTokenizer({"A": 1, "B": 2, "C": 3})
+    instr, resp, source = resolve_markers(tokenizer, "m", "A B", "C")
+    assert source == "explicit"
+    assert instr == [1, 2]
+    assert resp == [3]
+
+
+def test_resolve_none_when_undetectable(monkeypatch):
+    _stub_zoo(monkeypatch, raises = True)
+    tokenizer = FakeTokenizer({"x": 1})
+    assert resolve_markers(tokenizer, "unknown-model-xyz") == (None, None, "none")
+
+
+def test_masking_source_recorded_per_record(monkeypatch):
+    # The real detector returns an (instruction, response) pair; mirror that.
+    _stub_zoo(monkeypatch, parts = ("U", "R"))
+    tokenizer = FakeTokenizer({"U": 1, "R": 7, "w": 8})
+    records = score_rows(
+        [{"messages": [{"content": "R w"}]}],
+        config = OfflineScoreConfig(checkpoint = "c"),
+        model_name = "m", tokenizer = tokenizer,
+        forward_fn = lambda tok, ids: [[[0.0] * 9 for _ in ids]],
+        format_fn = fake_format,
+    )
+    assert records[0]["masking_source"] == "auto"
+    assert records[0]["status"] == "scored"
+    assert records[0]["num_loss_tokens"] == 2
+
+
+def test_apply_masking_off_scores_full_sequences():
+    tokenizer = FakeTokenizer({"a": 1, "b": 2})
+    config = OfflineScoreConfig(checkpoint = "c", apply_masking = False)
+    records = score_rows(
+        [{"messages": [{"content": "a b"}]}],
+        config = config, model_name = "m", tokenizer = tokenizer,
+        forward_fn = lambda tok, ids: [[[0.0, 0.0, 0.0] for _ in ids]],
+        format_fn = fake_format,
+    )
+    assert records[0]["status"] == "scored"
+    assert records[0]["num_loss_tokens"] == 2
+    # Convention "<source>-unmasked": no markers were resolvable AND masking
+    # was bypassed per run config — both facts preserved, not just one.
+    assert records[0]["masking_source"] == "none-unmasked"
+    assert records[0]["loss"] == pytest.approx(math.log(3.0))
 
 
 def test_read_per_example_records_serving_helper(tmp_path):

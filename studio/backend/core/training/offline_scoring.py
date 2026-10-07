@@ -63,6 +63,10 @@ class OfflineScoreConfig:
     response_part: Optional[str] = None
     device: str = "cuda"
     trust_remote_code: bool = False
+    # Mirror training: when the run trained on full sequences
+    # (train_on_completions off), score full sequences too instead of
+    # masking everything into nulls.
+    apply_masking: bool = True
 
 
 @dataclass
@@ -82,6 +86,10 @@ class ExampleScore:
     loss_kind: str = LOSS_KIND
     num_total_tokens: int = 0
     text_sha256: str = ""
+    # Where the masking markers came from: "explicit" | "auto" | "table" |
+    # "none" (+ "-unmasked" when apply_masking is off). If every record of a
+    # run says "none", masking never engaged — check this field first.
+    masking_source: str = ""
 
     def to_record(self) -> Dict[str, Any]:
         return {
@@ -98,6 +106,7 @@ class ExampleScore:
             "loss_kind": str(self.loss_kind),
             "num_total_tokens": int(self.num_total_tokens),
             "text_sha256": str(self.text_sha256),
+            "masking_source": str(self.masking_source),
         }
 
 
@@ -266,13 +275,17 @@ def resolve_markers(
     model_name: str,
     instruction_part: Optional[str] = None,
     response_part: Optional[str] = None,
-) -> Tuple[Optional[List[int]], Optional[List[int]]]:
+) -> Tuple[Optional[List[int]], Optional[List[int]], str]:
     """Token id sequences for the masking markers (explicit or detected).
 
-    Explicit strings win (exact run reproducibility). Otherwise the manual
-    template table is consulted first (same table training uses), then
-    unsloth_zoo auto-detection — both lazily imported. Returns
-    ``(instruction_ids, response_ids)`` with ``None`` for unknown sides.
+    Mirrors training's precedence in
+    ``utils.datasets.completion_masking.apply_completion_masking`` exactly:
+    explicit strings win (exact run reproducibility), then unsloth_zoo
+    chat-template auto-detection (imported from the SAME
+    ``unsloth_zoo.dataset_utils`` path training uses), then the manual
+    template table. Returns ``(instruction_ids, response_ids, source)``
+    where source is ``"explicit"`` | ``"auto"`` | ``"table"`` | ``"none"``,
+    so a run of all-null rows is diagnosable from its own records.
     """
     explicit_instruction = (instruction_part or "").strip() or None
     explicit_response = (response_part or "").strip() or None
@@ -280,7 +293,27 @@ def resolve_markers(
         return (
             _encode_marker(tokenizer, explicit_instruction),
             _encode_marker(tokenizer, explicit_response),
+            "explicit",
         )
+    try:
+        from unsloth_zoo.dataset_utils import (
+            get_chat_template_parts as detect_fn,
+        )
+    except Exception:
+        detect_fn = None  # type: ignore[assignment]
+    if detect_fn is not None:
+        try:
+            parts = detect_fn(tokenizer)
+            instruction_ids = _encode_marker(
+                tokenizer, parts[0] if len(parts) > 0 else None
+            )
+            response_ids = _encode_marker(
+                tokenizer, parts[1] if len(parts) > 1 else None
+            )
+            if instruction_ids or response_ids:
+                return instruction_ids, response_ids, "auto"
+        except Exception:
+            pass
     try:
         from utils.datasets.completion_masking import lookup_manual_markers
     except Exception:
@@ -294,19 +327,9 @@ def resolve_markers(
             return (
                 _encode_marker(tokenizer, instruction_text),
                 _encode_marker(tokenizer, response_text),
+                "table",
             )
-    try:
-        from unsloth_zoo import get_chat_template_parts
-    except Exception:
-        return None, None
-    try:
-        parts = get_chat_template_parts(tokenizer)
-        return (
-            _encode_marker(tokenizer, parts[0] if len(parts) > 0 else None),
-            _encode_marker(tokenizer, parts[1] if len(parts) > 1 else None),
-        )
-    except Exception:
-        return None, None
+    return None, None, "none"
 
 
 def _encode_marker(tokenizer: Any, text: Optional[str]) -> Optional[List[int]]:
@@ -403,6 +426,8 @@ def score_prepared_text(
     instruction_ids: Optional[Sequence[int]],
     max_seq_length: int,
     checkpoint: str,
+    masking_source: str = "",
+    apply_masking: bool = True,
 ) -> ExampleScore:
     """Score one prepared example: tokenize, mask, forward, NLL over spans."""
     score = ExampleScore(
@@ -413,12 +438,19 @@ def score_prepared_text(
         batch_id = prepared.get("batch_id"),
         checkpoint = str(checkpoint or ""),
         text_sha256 = str(prepared.get("text_sha256", "")),
+        masking_source = str(masking_source or ""),
     )
     try:
         text = str(prepared.get("text", "") or "")
         input_ids, labels = tokenize_and_mask(
             tokenizer, text, response_ids, instruction_ids, max_seq_length
         )
+        if not apply_masking:
+            # Training ran on full sequences: every token trains.
+            labels = list(input_ids)
+            score.masking_source = (
+                f"{masking_source}-unmasked" if masking_source else "unmasked"
+            )
         score.num_total_tokens = len(input_ids)
         logits = forward_fn(tokenizer, input_ids)
         loss, count = masked_nll(logits, labels)
@@ -457,20 +489,22 @@ def score_rows(
 
     Markers resolve ONCE (same masking for every row, like training), then
     each row scores independently; per-row failures degrade to ``error``
-    records instead of aborting the batch.
+    records instead of aborting the batch. ``config.apply_masking`` mirrors
+    the run's ``train_on_completions``: full-sequence runs score every token.
     """
     response_ids: Optional[Sequence[int]]
     instruction_ids: Optional[Sequence[int]]
+    masking_source = "none"
     response_ids, instruction_ids = (None, None)
     try:
-        instruction_ids, response_ids = resolve_markers(
+        instruction_ids, response_ids, masking_source = resolve_markers(
             tokenizer,
             model_name,
             config.instruction_part,
             config.response_part,
         )
     except Exception:
-        instruction_ids, response_ids = None, None
+        instruction_ids, response_ids, masking_source = None, None, "none"
     prepared = prepare_scoring_texts(
         rows,
         model_name = model_name,
@@ -491,6 +525,8 @@ def score_rows(
                 instruction_ids = instruction_ids,
                 max_seq_length = config.max_seq_length,
                 checkpoint = config.checkpoint,
+                masking_source = masking_source,
+                apply_masking = bool(config.apply_masking),
             ).to_record()
         )
     return records

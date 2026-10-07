@@ -219,6 +219,36 @@ def _resolve_dataset_file(run_config: Dict[str, Any]) -> str:
     return files[0]
 
 
+def read_jsonl_rows(dataset_file: str) -> List[Dict[str, Any]]:
+    """Read a JSONL dataset file with file/line-precise errors.
+
+    Raw ``json.loads`` failures look like ``Expecting value: line 2 column
+    1`` with no hint of WHICH file or line; that exact cryptic message is
+    what users saw. Every failure here names the file, the 1-based line
+    number, and a preview — and blank lines stay skippable, never fatal.
+    """
+    rows: List[Dict[str, Any]] = []
+    with open(dataset_file, "r", encoding = "utf-8") as handle:
+        for lineno, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError as exc:
+                preview = line.strip()[:120]
+                raise ValueError(
+                    f"dataset file '{dataset_file}' line {lineno} is not "
+                    f"valid JSON ({exc}); preview: {preview!r}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    f"dataset file '{dataset_file}' line {lineno} must be a "
+                    f"JSON object, got {type(parsed).__name__}"
+                )
+            rows.append(parsed)
+    return rows
+
+
 def check_row_cap(count: int) -> None:
     """Refuse absurd datasets before touching the GPU (pure, testable)."""
     if int(count) > MAX_SCORING_ROWS:
@@ -338,10 +368,7 @@ def _default_run_scoring(
                 if os.path.splitext(dataset_file)[1].lower() in (
                     ".json", ".jsonl",
                 ):
-                    with open(dataset_file, "r", encoding = "utf-8") as handle:
-                        rows.extend(
-                            json.loads(line) for line in handle if line.strip()
-                        )
+                    rows.extend(read_jsonl_rows(dataset_file))
                 else:
                     rows.extend(_default_load_rows(dataset_file))
         check_row_cap(len(rows))

@@ -291,6 +291,26 @@ def test_garbage_run_config_names_its_keys(tmp_path):
         _read_run_config(str(tmp_path))
 
 
+def test_jsonl_reader_names_file_line_and_preview(tmp_path):
+    from core.training.scoring_jobs import read_jsonl_rows
+
+    import pytest as _pytest
+
+    good = tmp_path / "good.jsonl"
+    good.write_text('{"a": 1}\n\n{"b": 2}\n', encoding = "utf-8")
+    assert read_jsonl_rows(str(good)) == [{"a": 1}, {"b": 2}]
+
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"a": 1}\nNOT-JSON\n', encoding = "utf-8")
+    with _pytest.raises(ValueError, match = "bad.jsonl.*line 2"):
+        read_jsonl_rows(str(bad))
+
+    not_obj = tmp_path / "array.jsonl"
+    not_obj.write_text('[1, 2]\n', encoding = "utf-8")
+    with _pytest.raises(ValueError, match = "must be a JSON object"):
+        read_jsonl_rows(str(not_obj))
+
+
 def test_read_per_example_records_tolerates_absent_files(tmp_path):
     from core.training.offline_scoring import read_per_example_records
 

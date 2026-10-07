@@ -1290,6 +1290,86 @@ def test_present_optimizer_steps_rejects_misaligned_inputs():
         present_optimizer_steps(groups[:2], [2, 2])
 
 
+def _example_records():
+    return [
+        {"row_id": 0, "example_id": "ex-0", "source": "s", "level": "L0",
+         "batch_id": "b", "loss": 2.9, "num_loss_tokens": 10,
+         "checkpoint": "ckpt", "status": "scored", "reason": ""},
+        {"row_id": 1, "example_id": "ex-1", "source": "s", "level": "L1",
+         "batch_id": "b", "loss": 0.4, "num_loss_tokens": 8,
+         "checkpoint": "ckpt", "status": "scored", "reason": ""},
+        {"row_id": 2, "example_id": "ex-2", "source": "s", "level": "L2",
+         "batch_id": "b", "loss": None, "num_loss_tokens": 0,
+         "checkpoint": "ckpt", "status": "no_loss_tokens",
+         "reason": "no trainable response tokens"},
+        {"row_id": 9, "example_id": "ex-orphan", "source": "s",
+         "level": "L9", "batch_id": "b", "loss": 9.9, "num_loss_tokens": 5,
+         "checkpoint": "ckpt", "status": "scored", "reason": ""},
+    ]
+
+
+def _composition_records():
+    # Real pilot shape (grad_accum=1): the epoch-opening record carries its
+    # own micro plus the next step's prefetched micro; the following record
+    # carries one micro; attribution (not raw rows) decides ownership.
+    return [
+        {"step": 5, "micro_batches": [[0, 4], [6, 1]], "micro_seqs": [6, 7],
+         "row_ids": [0, 4, 6, 1], "loss": 1.07},
+        {"step": 6, "micro_batches": [[3, 2]], "micro_seqs": [8],
+         "row_ids": [3, 2], "loss": 1.72},
+        {"step": 7, "micro_batches": [[7, 5]], "micro_seqs": [9],
+         "row_ids": [7, 5], "loss": 0.5},
+    ]
+
+
+def test_present_per_example_by_step_joins_and_ranks():
+    from core.training.composition_log import present_per_example_by_step
+
+    view = {
+        row["trainer_step"]: row
+        for row in present_per_example_by_step(
+            _composition_records(), _example_records()
+        )
+    }
+    step5 = view[5]
+    assert step5["loss"] == 1.07
+    assert step5["rule"] == "epoch_first"
+    # Epoch opener owns only its FIRST micro; the prefetched tail belongs to
+    # step 6 even though it sits in step 5's record.
+    assert [(e["example_id"], e["individual_loss"]) for e in step5["entries"]] == [
+        ("ex-0", 2.9),
+        (None, None),
+    ]
+    step6 = view[6]
+    assert step6["loss"] == 1.72
+    assert step6["rule"] == "prev_tail"
+    assert [(e["example_id"], e["individual_loss"]) for e in step6["entries"]] == [
+        ("ex-1", 0.4),
+        (None, None),
+    ]
+    step7 = view[7]
+    assert step7["loss"] == 0.5
+    assert [(e["example_id"], e["individual_loss"]) for e in step7["entries"]] == [
+        (None, None),
+        ("ex-2", None),
+    ]
+    # Orphan scored rows (no step claims them) stay out of step tables.
+    assert all(
+        e["example_id"] != "ex-orphan"
+        for row in view.values()
+        for e in row["entries"]
+    )
+
+
+def test_present_per_example_by_step_empty_inputs():
+    from core.training.composition_log import present_per_example_by_step
+
+    assert present_per_example_by_step([], []) == []
+    view = present_per_example_by_step(_composition_records(), [])
+    assert view[0]["loss"] == 1.07
+    assert all(e["individual_loss"] is None for e in view[0]["entries"])
+
+
 def test_file_b_end_to_end_true_steps_with_losses():
     # The full success shape on REAL pilot data: 64 collated micros
     # (offset seqs like a real sidecar, post-reset) + 8 optimizer marks

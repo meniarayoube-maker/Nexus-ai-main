@@ -508,3 +508,41 @@ def write_records_jsonl(records: Iterable[Dict[str, Any]], path: str) -> str:
     if count == 0:
         raise ValueError(f"refusing to write empty score file to '{path}'")
     return path
+
+
+PER_EXAMPLE_FILENAME = "per_example_loss.jsonl"
+
+
+def read_per_example_records(
+    output_dir: Optional[str], limit: int = 20000
+) -> Tuple[bool, List[Dict[str, Any]], int]:
+    """Read a run's per-example scores for API serving. Never raises.
+
+    Returns ``(exists, records, total)`` with ``records`` capped at ``limit``
+    so a pathological file cannot blow up a response. Torn lines are skipped;
+    only dict lines survive. ``output_dir`` comes from the run record itself,
+    never from user input.
+    """
+    if not (output_dir or "").strip():
+        return False, [], 0
+    path = os.path.join(str(output_dir).strip(), PER_EXAMPLE_FILENAME)
+    try:
+        kept: List[Dict[str, Any]] = []
+        total = 0
+        with open(path, "r", encoding = "utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                total += 1
+                if isinstance(parsed, dict) and len(kept) < max(0, int(limit)):
+                    kept.append(parsed)
+    except (OSError, ValueError):
+        return False, [], 0
+    if total == 0:
+        return False, [], 0
+    return True, kept, total

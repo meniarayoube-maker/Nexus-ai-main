@@ -24,6 +24,7 @@ from core.training.run_config_snapshot import (
 )
 from models import (
     BatchCompositionResponse,
+    PerExampleLossResponse,
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
     TrainingRunListResponse,
@@ -369,6 +370,56 @@ async def get_run_batch_composition(
         exists = exists,
         records = records,
         total_records = total,
+    )
+
+
+@router.get("/runs/{run_id}/per-example-loss", response_model = PerExampleLossResponse)
+async def get_run_per_example_loss(
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    no_credential: bool = Depends(authenticated_without_credential),
+):
+    """Per-example scores for a run, joined with step attribution.
+
+    Read-only: serves ``per_example_loss.jsonl`` when some flow produced it
+    (nothing generates it automatically) plus the step-joined view built with
+    the approved attribution rule. Output paths come from the run record
+    itself, never from user input. Missing files yield ``exists=False`` with
+    the exact message the UI must show — never a silent empty result.
+    """
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
+
+    from core.training.composition_log import (
+        present_per_example_by_step,
+        read_run_composition,
+    )
+    from core.training.offline_scoring import read_per_example_records
+
+    output_dir = (run.get("output_dir") or "").strip()
+
+    def _load():
+        import os as _os
+
+        output_present = bool(output_dir) and _os.path.isdir(output_dir)
+        per_exists, per_records, per_total = read_per_example_records(output_dir)
+        comp_exists, comp_records, _ = read_run_composition(output_dir)
+        steps = (
+            present_per_example_by_step(comp_records, per_records)
+            if comp_exists and per_exists
+            else []
+        )
+        return output_present, per_exists, per_records, per_total, steps
+
+    output_present, exists, records, total, steps = await asyncio.to_thread(_load)
+    return PerExampleLossResponse(
+        run_id = run_id,
+        exists = exists,
+        output_present = output_present,
+        records = records,
+        total_records = total,
+        steps = steps,
     )
 
 

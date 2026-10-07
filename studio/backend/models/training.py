@@ -898,6 +898,59 @@ class BatchCompositionResponse(BaseModel):
     total_records: int = 0
 
 
+class PerExampleLossRecord(BaseModel):
+    """One scored example, tolerant of older/producer-side shapes."""
+
+    row_id: Optional[int] = None
+    example_id: Optional[Any] = None
+    source: Optional[Any] = None
+    level: Optional[Any] = None
+    batch_id: Optional[Any] = None
+    loss: Optional[float] = None
+    num_loss_tokens: Optional[int] = None
+    checkpoint: Optional[str] = None
+    status: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class PerExampleStepEntry(BaseModel):
+    """One attributed example inside a step view (never causal proof)."""
+
+    row_id: int
+    example_id: Optional[Any] = None
+    source: Optional[Any] = None
+    level: Optional[Any] = None
+    batch_id: Optional[Any] = None
+    individual_loss: Optional[float] = None
+    num_loss_tokens: Optional[int] = None
+    status: Optional[str] = None
+
+
+class PerExampleStepView(BaseModel):
+    """One optimizer step joined with its per-example scores."""
+
+    trainer_step: int
+    loss: Optional[float] = None
+    rule: str = "none"
+    entries: List[PerExampleStepEntry] = Field(default_factory = list)
+
+
+class PerExampleLossResponse(BaseModel):
+    """Per-example scores for a run, plus the step-joined view.
+
+    ``exists`` is False when no score file was ever produced (no generation
+    flow runs automatically) — not an error. ``steps`` is empty when the
+    composition sidecar is absent; raw ``records`` still serve global search.
+    """
+
+    run_id: str
+    exists: bool
+    output_present: bool = False
+    records: List[PerExampleLossRecord] = Field(default_factory = list)
+    total_records: int = 0
+    steps: List[PerExampleStepView] = Field(default_factory = list)
+
+
 class TrainingRunDeleteResponse(BaseModel):
     """Response for deleting a training run."""
 

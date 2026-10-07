@@ -232,3 +232,23 @@ def test_tokenize_and_mask_end_to_end_ids():
     ids, labels = tokenize_and_mask(tokenizer, "u hi a yo", [3], [1], 2048)
     assert ids == [1, 2, 3, 4]
     assert labels == [-100, -100, 3, 4]
+
+
+def test_read_per_example_records_serving_helper(tmp_path):
+    from core.training.offline_scoring import read_per_example_records
+
+    assert read_per_example_records(None) == (False, [], 0)
+    assert read_per_example_records("") == (False, [], 0)
+    assert read_per_example_records(str(tmp_path)) == (False, [], 0)
+    sidecar = tmp_path / "per_example_loss.jsonl"
+    sidecar.write_text(
+        '{"row_id": 0, "loss": 2.5}\nnot-json\n{"row_id": 1}\n',
+        encoding = "utf-8",
+    )
+    exists, records, total = read_per_example_records(str(tmp_path))
+    assert exists is True
+    assert total == 2
+    assert [r["row_id"] for r in records] == [0, 1]
+    assert records[1].get("loss") is None
+    exists, records, total = read_per_example_records(str(tmp_path), limit = 1)
+    assert (exists, len(records), total) == (True, 1, 2)

@@ -74,11 +74,16 @@ export type {
   TrainingRunDeleteResponse,
   BatchCompositionRecord,
   BatchCompositionResponse,
+  PerExampleLossRecord,
+  PerExampleStepEntry,
+  PerExampleStepView,
+  PerExampleLossResponse,
 } from "./types/history";
 export {
   listTrainingRuns,
   getTrainingRun,
   getBatchComposition,
+  getPerExampleLoss,
   deleteTrainingRun,
   renameTrainingRun,
   restoreTrainingRunFromKaggle,

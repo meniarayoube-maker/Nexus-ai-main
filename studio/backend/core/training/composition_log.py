@@ -549,6 +549,86 @@ def present_step_attribution(
     return view
 
 
+def present_per_example_by_step(
+    composition_records: Iterable[Dict[str, Any]],
+    example_records: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Join step attribution with per-example scores (read-only).
+
+    For every attributed step: ``{trainer_step, loss, rule, entries}`` where
+    ``loss`` is the composition record's own step loss (same value the chart
+    renders — never recomputed), ``rule`` is the forensic branch taken, and
+    ``entries`` are ``{row_id, example_id, source, level, batch_id,
+    individual_loss, num_loss_tokens, status}`` sorted by individual loss
+    descending (``None`` sorts last). Rows with no scored example yield
+    null-loss entries instead of invented numbers; scored examples absent
+    from every step stay out of the step tables (the raw list still serves
+    global search). Steps are never renumbered.
+    """
+    by_row: Dict[int, Dict[str, Any]] = {}
+    for record in example_records or []:
+        if not isinstance(record, dict):
+            continue
+        try:
+            by_row[int(record.get("row_id", -1))] = record
+        except (TypeError, ValueError):
+            continue
+
+    def _number(value: Any) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            number = float(value)
+            return number if math.isfinite(number) else None
+        return None
+
+    loss_by_step: Dict[int, Any] = {}
+    for record in composition_records or []:
+        if not isinstance(record, dict):
+            continue
+        try:
+            loss_by_step[int(record.get("step", -1))] = record.get("loss")
+        except (TypeError, ValueError):
+            continue
+    view: List[Dict[str, Any]] = []
+    for attributed in attribute_steps(composition_records):
+        step = int(attributed.get("step", -1))
+        entries: List[Dict[str, Any]] = []
+        for row_id in attributed.get("attributed_row_ids", []) or []:
+            try:
+                key = int(row_id)
+            except (TypeError, ValueError):
+                continue
+            scored = by_row.get(key, {})
+            entries.append(
+                {
+                    "row_id": key,
+                    "example_id": scored.get("example_id"),
+                    "source": scored.get("source"),
+                    "level": scored.get("level"),
+                    "batch_id": scored.get("batch_id"),
+                    "individual_loss": _number(scored.get("loss")),
+                    "num_loss_tokens": scored.get("num_loss_tokens"),
+                    "status": scored.get("status"),
+                }
+            )
+        entries.sort(
+            key = lambda entry: (
+                entry["individual_loss"] is None,
+                -(entry["individual_loss"] or 0.0),
+            )
+        )
+        view.append(
+            {
+                "trainer_step": step,
+                "loss": _number(loss_by_step.get(step)),
+                "rule": str(attributed.get("rule", "none")),
+                "entries": entries,
+            }
+        )
+    return view
+
+
 def join_with_losses(
     records: Iterable[Dict[str, Any]],
     losses: Iterable[Tuple[int, float]],

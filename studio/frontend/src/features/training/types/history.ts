@@ -80,3 +80,43 @@ export interface BatchCompositionResponse {
   records: BatchCompositionRecord[];
   total_records: number;
 }
+
+export interface PerExampleLossRecord {
+  row_id: number | null;
+  example_id: unknown;
+  source: unknown;
+  level: unknown;
+  batch_id: unknown;
+  loss: number | null;
+  num_loss_tokens: number | null;
+  checkpoint: string | null;
+  status: string | null;
+  reason: string | null;
+}
+
+export interface PerExampleStepEntry {
+  row_id: number;
+  example_id: unknown;
+  source: unknown;
+  level: unknown;
+  batch_id: unknown;
+  individual_loss: number | null;
+  num_loss_tokens: number | null;
+  status: string | null;
+}
+
+export interface PerExampleStepView {
+  trainer_step: number;
+  loss: number | null;
+  rule: string;
+  entries: PerExampleStepEntry[];
+}
+
+export interface PerExampleLossResponse {
+  run_id: string;
+  exists: boolean;
+  output_present: boolean;
+  records: PerExampleLossRecord[];
+  total_records: number;
+  steps: PerExampleStepView[];
+}

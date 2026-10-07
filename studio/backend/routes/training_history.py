@@ -24,6 +24,7 @@ from core.training.run_config_snapshot import (
 )
 from models import (
     BatchCompositionResponse,
+    PerExampleGenerateResponse,
     PerExampleLossResponse,
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,

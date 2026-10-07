@@ -89,12 +89,45 @@ def _default_training_active() -> bool:
 
 
 def _read_run_config(output_dir: str) -> Dict[str, Any]:
+    """Read a run's training config via the official snapshot loader.
+
+    ``run-config.json`` is nested (``{"saved_at": ..., "config": {...}}``);
+    reading the top level yields nothing usable (past bug). A flat legacy
+    shape is still accepted. Raises with the actual top-level keys when
+    neither shape holds, so the UI can show what is wrong.
+    """
+    try:
+        from core.training.run_config_snapshot import load_run_config_snapshot
+    except Exception:
+        load_run_config_snapshot = None  # type: ignore[assignment]
+    if load_run_config_snapshot is not None:
+        try:
+            config = load_run_config_snapshot(output_dir)
+        except Exception:
+            config = None
+        if isinstance(config, dict) and config:
+            return config
     path = os.path.join(output_dir, "run-config.json")
-    with open(path, "r", encoding = "utf-8") as handle:
-        data = json.load(handle)
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read run-config.json: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError("run-config.json is not an object")
-    return data
+    inner = data.get("config")
+    if isinstance(inner, dict) and inner:
+        return inner
+    known = {
+        "dataset_source", "local_datasets", "hf_dataset", "model_name",
+        "format_type", "max_seq_length",
+    }
+    if any(key in data for key in known):
+        return {key: value for key, value in data.items() if key != "saved_at"}
+    raise ValueError(
+        "run-config.json has no usable training config "
+        f"(top-level keys: {sorted(str(key) for key in data)[:12]})"
+    )
 
 
 def _resolve_scoring_source(run_config: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:

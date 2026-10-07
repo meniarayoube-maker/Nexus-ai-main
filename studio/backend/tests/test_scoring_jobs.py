@@ -244,6 +244,53 @@ def test_scoring_source_huggingface_and_rejections():
         _resolve_scoring_source({})
 
 
+def test_nested_run_config_shape_resolves_dataset(tmp_path):
+    # Regression: real run-config.json is nested ({saved_at, config}); reading
+    # the top level yielded nothing usable and every run was refused.
+    from core.training.scoring_jobs import _read_run_config, _resolve_scoring_source
+
+    dataset_file = tmp_path / "data.jsonl"
+    dataset_file.write_text('{"a": 1}\n', encoding = "utf-8")
+    inner = {
+        "dataset_source": "upload",
+        "local_datasets": [str(dataset_file)],
+        "model_name": "m",
+    }
+    (tmp_path / "run-config.json").write_text(
+        json.dumps({"saved_at": "t", "config": inner}), encoding = "utf-8"
+    )
+    loaded = _read_run_config(str(tmp_path))
+    assert loaded["model_name"] == "m"
+    kind, spec = _resolve_scoring_source(loaded)
+    assert kind == "upload"
+    assert spec["files"] == [str(dataset_file)]
+
+
+def test_nested_hf_run_config_resolves_dataset():
+    from core.training.scoring_jobs import _resolve_scoring_source
+
+    kind, spec = _resolve_scoring_source({
+        "dataset_source": "huggingface",
+        "hf_dataset": "org/ds",
+        "subset": None,
+        "train_split": "train",
+    })
+    assert kind == "huggingface"
+    assert spec["hf_dataset"] == "org/ds"
+
+
+def test_garbage_run_config_names_its_keys(tmp_path):
+    from core.training.scoring_jobs import _read_run_config
+
+    import pytest as _pytest
+
+    (tmp_path / "run-config.json").write_text(
+        '{"foo": 1}', encoding = "utf-8"
+    )
+    with _pytest.raises(ValueError, match = "foo"):
+        _read_run_config(str(tmp_path))
+
+
 def test_read_per_example_records_tolerates_absent_files(tmp_path):
     from core.training.offline_scoring import read_per_example_records
 
